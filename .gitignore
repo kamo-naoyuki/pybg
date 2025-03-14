@@ -1,0 +1,63 @@
+# Bytecode cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.virtualenv/
+
+# Build and distribution files
+*.egg-info/
+dist/
+build/
+
+# Poetry lock file (uncomment if you want to track dependencies)
+poetry.lock
+
+# Pipenv lock files
+Pipfile
+Pipfile.lock
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VSCode settings
+.vscode/
+*.code-workspace
+
+# PyCharm settings
+.idea/
+
+# macOS system files
+.DS_Store
+
+# Windows system files
+Thumbs.db
+Desktop.ini
+
+# Log files
+*.log
+logs/
+
+# Environment variables and secret files
+.env
+.envrc
+*.secret
+
+# mypy type checker cache
+.mypy_cache/
+
+# pytest cache
+.pytest_cache/
+
+# Code coverage reports
+.coverage
+htmlcov/
+
+# Profiling data
+*.prof
+
+# Docker override file (useful for local development)
+docker-compose.override.yml
