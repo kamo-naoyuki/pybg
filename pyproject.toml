@@ -2,23 +2,44 @@
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+
 [project]
-name = "by"
-version = "0.1.0"
-description = "A simple example project"
+name = "pybg"
+description = "Parallel job execution in shell scripts"
 readme = "README.md"
 authors = [
     { name = "Naoyuki Kamo", email = "naoyuki.kamo829@gmail.com" }
 ]
 license = { text = "MIT" }
-dependencies = [
-    "colorama>=0.4.6",
-]
+dependencies = []
+dynamic = ["version"]
+
+[tool.setuptools.dynamic]
+version = {attr = "pybg.__version__"}
+
 
 [project.optional-dependencies]
 dev = [
     "pytest>=6.2",
 ]
 
+[tool.setuptools.package-dir]
+pybg = "pybg"
+
 [project.scripts]
-# my-script = "my_project.cli:main"
+pybg = "pybg:main"
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.black]
+target-version = ['py39', 'py310']
+line-length = 120
+
+[flake8]
+extend-ignore = "E203, W503"
+max-line-length = 120
+
+[tool.mypy]
+python_version = "3.9"

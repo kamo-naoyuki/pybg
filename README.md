@@ -1,31 +1,45 @@
-# pybg: Backgroup
+# Pybg: Parallel job execution for shell scripts
 ## What is this?
-
-pybg is a tool that supports parallel job execution within shell scripts.
-
 In Unix shell scripts, commands can be executed in parallel using background processes, but pybg simplifies job management with additional features.
 
-Key Features:
-- Management of job success and failure
-- Handling of job output logs
-- Limitation on the number of concurrently running jobs
-- Automatic re-execution of failed jobs
+Key features:
+- Monitoring of job success and failure
+- Management of job output logs
+- Controling of the number of concurrently running jobs
+- Re-execution of failed jobs
 - Support for job submission via Slurm
 
-## Requirement
-
-Windows is not supported
-
-## Insatll
+## Install
 
 ```sh
-git clone
+git clone https://github.com/kamo-naoyuki/pybg
 pip install ./pybg
 ```
 
+[!CAUTION]
+Windows is not supported
 
-## Usage
+## Example
 
+<table>
+<tr>
+<th>Unix background process</th>
+<th>Pybg style</th>
+</tr>
+<tr>
+<td>
+<sub>
+
+```sh
+echo Hello World &
+group sleep 40 &
+python -c "print('This is python')" &
+wait
+```
+
+</sub>
+<td>
+<sub>
 
 ```sh
 # 1. Clear all commands from the pool server
@@ -40,6 +54,12 @@ pybg write group
 pybg run group
 ```
 
+</sub>
+</td>
+</tr>
+</table>
+
+
 
 ### Option
 
@@ -47,7 +67,7 @@ pybg run group
 
 
 ```sh
-pybg template > run.sh
+pybg tpl > run.sh
 ```
 
 

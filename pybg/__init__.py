@@ -1,37 +1,32 @@
-import traceback
-import signal
 import argparse
-from collections import Counter
 import datetime
 import enum
-from functools import partial
 import hashlib
 import logging
-from logging.handlers import RotatingFileHandler
 import multiprocessing
 import os
 import select
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
+from functools import partial
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
-import colorama
+__version__ = "0.1.0"
 
-colorama.init(autoreset=True)
-
-RED = colorama.Fore.RED
-GREEN = colorama.Fore.GREEN
-RESET = colorama.Style.RESET_ALL
-
-use_color = sys.stdout.isatty()
+RED = "\033[31m"
+GREEN = "\033[32m"
+RESET = "\033[0m"
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -40,10 +35,11 @@ st_handler = logging.StreamHandler()
 st_handler.setFormatter(logging.Formatter(FORMAT))
 logger.addHandler(st_handler)
 
-dfmt = "%Y/%m/%d %H:%M:%S.%f"
+dfmt = "%Y/%m/%d %H:%M:%S"
 
 
 def print_colored(text, *, color=None, **kwargs):
+    use_color = sys.stdout.isatty()
     if use_color and color is not None:
         print(color + text + RESET, **kwargs)
     else:
@@ -89,10 +85,11 @@ def read_file_reverse(filename, max_lines):
 
 
 class PROTO:
-    ADD = b"\1"
-    CLEAR = b"\2"
-    DUMP = b"\3"
-    END_COMMAND = b"\4"
+    ACK = b"\1"
+    ADD = b"\2"
+    CLEAR = b"\3"
+    DUMP = b"\4"
+    END = b"\5"
 
 
 class CommandPoolServer:
@@ -106,18 +103,16 @@ class CommandPoolServer:
     @classmethod
     def get_socket_file(cls, group_id):
         if os.name == "posix":
-            return f"/tmp/pybg-{os.getuid()}/{group_id}"
+            return f"/tmp/pybg-{os.getuid()}/{group_id}.socket"
         else:
             raise RuntimeError("Only UNIX is supported")
             if isinstance(group_id, int):
-                raise RuntimeError(
-                    f"group_id must be a port number for Windows: {group_id}"
-                )
+                raise RuntimeError(f"group_id must be a port number for Windows: {group_id}")
             return ("127.0.0.1", group_id)
 
     @classmethod
     def get_log_file(cls, group_id):
-        return f"pybg-{os.getuid()}/{group_id}.log"
+        return f"/tmp/pybg-{os.getuid()}/{group_id}.log"
 
     def __init__(self, group_id, timeout=60 * 5):
         self.group_id = group_id
@@ -154,6 +149,43 @@ class CommandPoolServer:
                     logger.warning(f"Timeout: {self.timeout}s")
                     os._exit(0)
 
+    def safe_recv(self, socket, chunk=1024):
+        received = b""
+        while True:
+            try:
+                data = socket.recv(chunk)
+                with self.lock:
+                    self.last_access_time = time.time()
+                received += data
+                if data.endswith(PROTO.END):
+                    break
+
+            except ConnectionResetError as e:
+                # Connection reset by client should be ignored
+                logger.error(f"{e}")
+                data = None
+                received = None
+            except MemoryError as e:
+                logger.error(f"Memory error has happened! Stopping server...")
+                self.running = False
+                data = None
+                received = None
+            if not data:
+                break
+        return received
+
+    def safe_sendall(self, socket, data):
+        try:
+            socket.sendall(data)
+            with self.lock:
+                self.last_access_time = time.time()
+            return True
+        except ConnectionResetError as e:
+            logger.error(f"Error sending {data}: {e}")
+        except BrokenPipeError as e:
+            logger.error(f"Error sending {data}: {e}")
+        return False
+
     def start(self):
         self.daemonize()
 
@@ -175,90 +207,61 @@ class CommandPoolServer:
             server.bind(self.socket_file)
             server.listen()
 
-            sockets_list = [server]
-            write_flagup = set()
-            received = defaultdict(lambda: b"")
-
             while self.running:
-                readable, writable, exceptional = select.select(
-                    sockets_list, sockets_list, []
-                )
+                logger.info("Waiting for connection...")
+                client_socket, addr = server.accept()
+                with self.lock:
+                    self.last_access_time = time.time()
 
-                finished = set()
-                for s in readable:
-                    if s is server:
-                        client_socket, addr = server.accept()
-                        client_socket.setblocking(False)
-                        sockets_list.append(client_socket)
-                    else:
-                        try:
-                            data = s.recv(1024)
-                        except BlockingIOError:
-                            pass
-                        else:
-                            with self.lock:
-                                self.last_access_time = time.time()
-                            if not data:
-                                finished.add(s)
-                            if PROTO.DUMP in data:
-                                logger.info("RECV: DUMP")
-                                write_flagup.add(s)
-                            received[s] += data
+                logger.info(f"Connection has been accepted: {addr}")
+                data = self.safe_recv(client_socket)
+                if data is not None:
 
-                for s in finished:
-                    if received[s].startswith(PROTO.CLEAR):
-                        self.commands = []
+                    if data.startswith(PROTO.CLEAR):
                         logger.info("RECV: CLEAR")
+                        self.safe_sendall(client_socket, PROTO.ACK + PROTO.END)
+                        self.commands = []
 
-                    elif received[s].startswith(PROTO.ADD):
-                        self.commands.append(received[s][len(PROTO.ADD) :])
-                        logger.info("RECV: ADD")
+                    elif data.startswith(PROTO.ADD):
+                        command = data[len(PROTO.ADD) : -len(PROTO.END)]
+                        logger.info(f"RECV: ADD: {command}")
+                        self.safe_sendall(client_socket, PROTO.ACK + PROTO.END)
+                        self.commands.append(command)
 
-                    elif received[s].startswith(PROTO.DUMP):
-                        pass
+                    elif data.startswith(PROTO.DUMP):
+                        logger.info("RECV: DUMP")
+                        ack_data = None
+                        while True:
+                            for command in self.commands:
+                                if not self.safe_sendall(client_socket, command + b"\n"):
+                                    break
+                            if not self.safe_sendall(client_socket, PROTO.END):
+                                break
+                            ack_data = self.safe_recv(client_socket)
+                            if ack_data == PROTO.ACK + PROTO.END:
+                                break
+                            elif ack_data is not None:
+                                logger.error("ACK packet is expected: {ack_data}")
 
-                    elif received[s]:
-                        logger.error(f"Unknown format: {received[s]}")
+                        with self.lock:
+                            logger.error(f"Successfully finished writing. Stopping server...")
+                            self.running = False
+
+                    elif data:
+                        logger.error(f"Unknown format: {data}")
                     else:
                         pass
 
-                    s.close()
-                    del received[s]
-                    sockets_list.remove(s)
 
-                for s in writable:
-                    if s not in write_flagup:
-                        continue
-                    error = False
-                    for command in self.commands:
-                        try:
-                            s.sendall(command + b"\n")
-                        except BlockingIOError:
-                            error = True
-                            logger.error("Socket is not writable")
-                    try:
-                        s.sendall(PROTO.END_COMMAND)
-                    except BlockingIOError:
-                        error = True
-                        logger.error("Socket is not writable")
-
-                    if not error:
-                        with self.lock:
-                            self.last_access_time = time.time()
-
-                    write_flagup.remove(s)
-                    with self.lock:
-                        logger.error(f"Stopping server...")
-                        self.running = False
-
-                for s in exceptional:
-                    logger.error(f"Error on connection happened")
-                    if s in received:
-                        del received[s]
-                    if s in write_flagup:
-                        write_flagup.remove(s)
-                    s.close()
-                    sockets_list.remove(s)
+def check_server_running(group_id, timeout=10):
+    socket_file = CommandPoolServer.get_socket_file(group_id)
+    # Wait until the server has started
+    start_time = time.time()
+    with CommandPoolServer.get_socket() as client:
+        while client.connect_ex(socket_file) != 0:
+            if time.time() - start_time > timeout:
+                raise RuntimeError(f"Server '{group_id}' is not running? Timeout: {timeout}s")
+            time.sleep(0.01)
 
 
 def server_start(group_id, timeout=10):
@@ -268,35 +271,18 @@ def server_start(group_id, timeout=10):
             if os.name == "posix" and Path(socket_file).exists():
                 try:
                     Path(socket_file).unlink()
-                except Exception:
+                except FileNotFoundError:
                     pass
 
             server = CommandPoolServer(group_id=group_id)
             process = multiprocessing.Process(target=server.start, daemon=True)
             process.start()
 
-    # Wait until the server has started
-    start_time = time.time()
-    with CommandPoolServer.get_socket() as client:
-        while client.connect_ex(socket_file) != 0:
-            if time.time() - start_time > timeout:
-                raise RuntimeError(
-                    f"Server '{group_id}' is not running? Timeout: {timeout}s"
-                )
-            time.sleep(0.01)
+    check_server_running(group_id, timeout=timeout)
 
 
 def dump(group_id, basedir, timeout=1, allow_same=False):
-    # Wait until the server has started
-    socket_file = CommandPoolServer.get_socket_file(group_id)
-    start_time = time.time()
-    with CommandPoolServer.get_socket() as client:
-        while client.connect_ex(socket_file) != 0:
-            if time.time() - start_time > timeout:
-                raise RuntimeError(
-                    f"Server '{group_id}' is not runnig? Timeout: {timeout}s"
-                )
-            time.sleep(0.01)
+    check_server_running(group_id, timeout=timeout)
 
     basedir = Path(basedir)
     groupdir = basedir / group_id
@@ -304,11 +290,10 @@ def dump(group_id, basedir, timeout=1, allow_same=False):
 
     added_commands = set()
 
-    with (groupdir / "commands").open(
-        "w"
-    ) as fout, CommandPoolServer.get_socket() as client:
+    socket_file = CommandPoolServer.get_socket_file(group_id)
+    with (groupdir / "commands").open("w") as fout, CommandPoolServer.get_socket() as client:
         client.connect(socket_file)
-        client.sendall(PROTO.DUMP)
+        client.sendall(PROTO.DUMP + PROTO.END)
 
         received = b""
         count = 0
@@ -332,9 +317,7 @@ def dump(group_id, basedir, timeout=1, allow_same=False):
             for idx, command in enumerate(binary_command_list):
                 decoded_command = command.decode()
                 if "#SBATCH" in decoded_command:
-                    valid_command, slurm_options = decoded_command.split(
-                        "#SBATCH", maxsplit=1
-                    )
+                    valid_command, slurm_options = decoded_command.split("#SBATCH", maxsplit=1)
                 else:
                     valid_command = decoded_command
                 valid_command = valid_command.strip()
@@ -343,17 +326,46 @@ def dump(group_id, basedir, timeout=1, allow_same=False):
                     fout.write(f"{decoded_command}\n")
                     count += 1
                 else:
-                    print_colored(f"Duplicated commands: {valid_command}", color=RED)
+                    print_colored(
+                        log_format(
+                            message=f"Duplicated commands: {valid_command}",
+                            group_id=group_id,
+                        )
+                    )
 
                 if not allow_same:
                     added_commands.add(valid_command)
 
-            if PROTO.END_COMMAND in received:
-                if received != PROTO.END_COMMAND:
+            if PROTO.END in received:
+                if received != PROTO.END:
                     raise RuntimeError(f"Bug?: {received}")
                 # Break while loop
-                print_colored(f"Dump {count} commands in {groupdir / 'commands'}")
+                print_colored(
+                    log_format(
+                        message=f"Dump {count} commands in {groupdir / 'commands'}",
+                        group_id=group_id,
+                    )
+                )
                 return
+        client.sendall(PROTO.ACK + PROTO.END)
+
+
+def log_format(
+    message,
+    group_id=None,
+    jobid=None,
+    status=None,
+) -> str:
+    retval = f"[ {datetime.datetime.now():{dfmt}}"
+    if group_id and jobid is not None:
+        retval += f" | {group_id} {jobid}"
+    elif group_id is not None:
+        retval += f" | {group_id}"
+    if status is not None:
+        retval += f" | {status}"
+
+    retval += f" ] {message}"
+    return retval
 
 
 class Runner:
@@ -371,16 +383,15 @@ class Runner:
         lock_print,
         event,
         waittime=0.02,
-        file=sys.stdout,
         squeue_minimum_interval=5,
     ):
 
-        last_squeue_time = {}
+        last_squeue_time = None
         while True:
             with lock:
                 _processes = processes.copy()
             finished = set()
-            for jobid, (process, jobdir, slurm_jobid) in _processes.items():
+            for jobid, (process, command, jobdir, slurm_jobid) in _processes.items():
                 returncode = None
                 if slurm_jobid is None:
                     try:
@@ -393,7 +404,12 @@ class Runner:
                     # Force sync
                     list(jobdir.iterdir())
                     # status file is wrote by batch script itself
-                    if not (jobdir / "status").exists():
+                    if (jobdir / "status").exists():
+                        try:
+                            returncode = int((jobdir / "status").read_text().strip())
+                        except:
+                            returncode = 1
+                    else:
                         # If active_text is existing, the job is runnig
                         if (jobdir / "active").exists():
 
@@ -414,24 +430,28 @@ class Runner:
 
                         # if active_text is not existing, the job has not yet started
                         else:
-                            # Get status using squeue command
-                            last_time = last_squeue_time.get(slurm_jobid)
                             # To reduce the load of slurm server, avoid excecuting squeue command within squeue_minimum_interval
-                            if last_time is None or time.time() - last_time > squeue_minimum_interval:
-                                process = subprocess.Popen(["squeue", "--noheader", "--job", str(slurm_jobid), "-o", "%T"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                                last_squeue_time[slurm_jobid] = time.time()
+                            if last_squeue_time is None or time.time() - last_squeue_time > squeue_minimum_interval:
+                                process = subprocess.Popen(
+                                    [
+                                        "squeue",
+                                        "--noheader",
+                                        "--job",
+                                        str(slurm_jobid),
+                                        "-o",
+                                        "%T",
+                                    ],
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                )
+                                last_squeue_time = time.time()
                                 stdout, stderr = process.communicate()
-                                if process.returncode != 0:
+                                stdout = stdout.decode()
+                                stderr = stderr.decode()
+                                # Job already finished
+                                if process.returncode != 0 or stdout == "":
                                     # Force sync
                                     list(jobdir.iterdir())
-                                    # Job already finished
-                                    if "Invalid job id specified" in stderr:
-                                        lock_print(
-                                            f"[bg|{group_id}|Error|{datetime.datetime.now():{dfmt}}]"
-                                            f" squeue command is enexpectedly failed: {stderr}",
-                                            file=file,
-                                            color=RED,
-                                        )
 
                                     # the job has been Killed
                                     if not (jobdir / "status").exists():
@@ -443,20 +463,17 @@ class Runner:
                                         except:
                                             returncode = 1
 
-                    else:
-                        try:
-                            returncode = int((jobdir / "status").read_text().strip())
-                        except:
-                            returncode = 1
-
                 if returncode is not None:
                     (Path(jobdir) / "status").write_text(f"{returncode}\n")
                     finished.add(jobid)
                     if returncode != 0:
                         lock_print(
-                            f"[bg|{group_id}|Fail({returncode})|{datetime.datetime.now():{dfmt}}]"
-                            f" pybg show {group_id} {jobid}",
-                            file=file,
+                            log_format(
+                                message=command,
+                                group_id=group_id,
+                                jobid=jobid,
+                                status=f"Fail({returncode})",
+                            ),
                             color=RED,
                         )
                         with count_lock:
@@ -464,9 +481,12 @@ class Runner:
                         failed_jobs.add(jobid)
                     else:
                         lock_print(
-                            f"[bg|{group_id}|Succeed|{datetime.datetime.now():{dfmt}}]"
-                            f" pybg show {group_id} {jobid}",
-                            file=file,
+                            log_format(
+                                message=command,
+                                group_id=group_id,
+                                jobid=jobid,
+                                status=f"Success",
+                            ),
                             color=GREEN,
                         )
                         with count_lock:
@@ -494,7 +514,6 @@ class Runner:
         log_interval=300,
         num_parallel=10,
         launch_interval=0.1,
-        file=sys.stdout,
     ):
         st = time.time()
         while True:
@@ -505,15 +524,16 @@ class Runner:
                 if slurm_options is None:
                     flogfile = logfile.open("w")
                     try:
-                        process = subprocess.Popen(
-                            shlex.split(command), stdout=flogfile, stderr=flogfile
-                        )
+                        process = subprocess.Popen(shlex.split(command), stdout=flogfile, stderr=flogfile)
                     except FileNotFoundError as e:
                         flogfile.write(traceback.format_exc() + "\n")
                         lock_print(
-                            f"[bg|{group_id}|Error|{datetime.datetime.now():{dfmt}}]"
-                            f"Failed to execute command: {command}",
-                            file=file,
+                            log_format(
+                                message=f"Failed to execute command: {command}",
+                                group_id=group_id,
+                                jobid=jobid,
+                                status="Error",
+                            ),
                             color=RED,
                         )
                         with count_lock:
@@ -523,17 +543,24 @@ class Runner:
                         self.subprocesses.append((process, slurm_jobid))
 
                         lock_print(
-                            f"[bg|{group_id}|Submit(pid={process.pid},jobid={jobid})|{datetime.datetime.now():{dfmt}}]"
-                            f" {command}",
-                            file=file,
+                            log_format(
+                                message=command,
+                                group_id=group_id,
+                                jobid=jobid,
+                                status=f"Submit(pid={process.pid})",
+                            ),
                         )
                         with lock:
-                            processes[jobid] = (process, jobdir, slurm_jobid)
+                            processes[jobid] = (process, command, jobdir, slurm_jobid)
 
                 else:
                     # Using sbatch (Slurm batch script)
+                    sbatch_command = ["sbatch", "-o", logfile] + shlex.split(slurm_options)
                     process = subprocess.Popen(
-                        ["sbatch", "-o", logfile] + shlex.split(slurm_options), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                        sbatch_command,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                     )
                     active_text = jobdir / "active"
                     status_text = jobdir / "status"
@@ -541,7 +568,7 @@ class Runner:
                         if p.exists():
                             try:
                                 p.unlink()
-                            except Exception:
+                            except FileNotFoundError:
                                 pass
                     batch_script = f"""\
 #!/usr/bin/env sh
@@ -555,9 +582,13 @@ update_timestamp() {{
 write_status() {{
     echo $? > '{status_text}'
     kill $PID
+    exit $?
 }}
 # For logging
 echo '# {slurm_options}'
+echo "# $(hostname)"
+echo "# $(date)"
+echo "# $(pwd)"
 
 rm -f '{status_text}'
 # Force sync
@@ -565,9 +596,9 @@ ls '{jobdir}' &> /dev/null
 
 update_timestamp &
 PID=$!
-trap write_status SIGINT
-trap write_status SIGTERM
-trap write_status SIGQUIT
+trap write_status INT
+trap write_status TERM
+trap write_status QUIT
 trap write_status EXIT
 
 {command}
@@ -577,17 +608,21 @@ trap write_status EXIT
                     # Failed to submit
                     if process.returncode != 0:
                         lock_print(
-                            f"[bg|{group_id}|Error(jobid={jobid})|{datetime.datetime.now():{dfmt}}]"
-                            f" {stderr}",
+                            log_format(
+                                message=f"{shlex.join(sbatch_command)}: {stderr.decode()}",
+                                group_id=group_id,
+                                jobid=jobid,
+                                status="Error",
+                            ),
                             color=RED,
-                            file=file,
                         )
                     else:
+
                         def get_jobid(stdout):
                             # Derive jobid from output
                             # e.g. Submitted batch job 1346323
                             slurm_jobid = None
-                            for token in stdout.strip().split():
+                            for token in stdout.decode().strip().split():
                                 try:
                                     _slurm_jobid = int(token)
                                 except ValueError:
@@ -599,27 +634,34 @@ trap write_status EXIT
                                         slurm_jobid = None
                                         break
                             return slurm_jobid
+
                         slurm_jobid = get_jobid(stdout)
 
                         if slurm_jobid is None:
                             lock_print(
-                                f"[bg|{group_id}|Error(jobid={jobid})|{datetime.datetime.now():{dfmt}}]"
-                                f"Unexpected output from sbatch: {stderr}",
-                                file=file,
+                                log_format(
+                                    message=f"Unexpected output from sbatch: {stderr.decode()}",
+                                    group_id=group_id,
+                                    jobid=jobid,
+                                    status="Error",
+                                ),
                             )
                         else:
                             self.subprocesses.append((None, slurm_jobid))
                             jobid = Path(jobdir).name
                             with lock:
-                                processes[jobid] = (None, jobdir, slurm_jobid)
+                                processes[jobid] = (None, command, jobdir, slurm_jobid)
 
                             lock_print(
-                                f"[bg|{group_id}|Submit(jobid={jobid},slurm_jobid={slurm_jobid})|{datetime.datetime.now():{dfmt}}]"
-                                f" {command} #SBATCH {slurm_options}",
-                                file=file,
+                                log_format(
+                                    message=f"{command} #SBATCH {slurm_options}",
+                                    group_id=group_id,
+                                    jobid=jobid,
+                                    status=f"Submit(slurm_jobid={slurm_jobid})",
+                                ),
                             )
 
-            # All jobs are finished
+            # All jobs has been finished
             if len(jobs) == 0 and len(processes) == 0:
                 event.set()
                 break
@@ -632,9 +674,11 @@ trap write_status EXIT
                     running = len(processes)
 
                 lock_print(
-                    f"[bg|{group_id}|Status|{datetime.datetime.now():{dfmt}}]"
-                    f" queue/running/succeeded/failed={queue}/{running}/{succeeded}/{failed}",
-                    file=file,
+                    log_format(
+                        message=f"queue/running/success/fail = {queue}/{running}/{succeeded}/{failed}",
+                        group_id=group_id,
+                        status="Status",
+                    ),
                 )
                 st = time.time()
             time.sleep(launch_interval)
@@ -642,13 +686,12 @@ trap write_status EXIT
     def run(
         self,
         group_id,
-        basedir="pybg",
+        basedir="pybg_logs",
         rerun=False,
         num_parallel=10,
         launch_interval=0.1,
         waittime=0.02,
         log_interval=30,
-        file=sys.stdout,
     ):
 
         basedir = Path(basedir)
@@ -666,12 +709,10 @@ trap write_status EXIT
         counter = Counter()
         for command in command_list:
             if "#SBATCH" in command:
-                for scommand in ["sbatch", "squeue"]:
+                for scommand in ["sbatch", "squeue", "scancel"]:
                     if shutil.which(scommand) is None:
                         raise RuntimeError(f"Slurm is not setup? command not found: {scommand}")
-                valid_command, slurm_options = command.split(
-                    "#SBATCH", maxsplit=1
-                )
+                valid_command, slurm_options = command.split("#SBATCH", maxsplit=1)
                 slurm_options = slurm_options.strip()
             else:
                 valid_command = command
@@ -680,11 +721,7 @@ trap write_status EXIT
             counter[valid_command] += 1
 
             jobid = hashlib.sha256(
-                (
-                    valid_command + ""
-                    if counter[valid_command] == 1
-                    else str(counter[valid_command])
-                ).encode()
+                (valid_command + "" if counter[valid_command] == 1 else str(counter[valid_command])).encode()
             ).hexdigest()
             # Using the first 8 chars for usabilily
             jobid = jobid[:8]
@@ -699,7 +736,7 @@ trap write_status EXIT
             elif slurm_options_text.exists():
                 try:
                     slurm_options_text.unlink()
-                except Exception:
+                except FileNotFoundError:
                     pass
 
             if status_text.exists():
@@ -714,11 +751,10 @@ trap write_status EXIT
                 jobs.append((valid_command, jobdir, slurm_options))
             else:
                 lock_print(
-                    f"[bg|{group_id}|Skip(jobid={jobid})|{datetime.datetime.now():{dfmt}}]"
-                    f" {valid_command}",
-                    file=file,
+                    f"[bg|{group_id}|Skip(jobid={jobid})|{datetime.datetime.now():{dfmt}}]" f" {valid_command}",
                 )
         del counter
+        already_finished = len(command_list) - len(jobs)
 
         lock = threading.Lock()
         count_lock = threading.Lock()
@@ -739,7 +775,6 @@ trap write_status EXIT
                 lock_print=lock_print,
                 event=event,
                 waittime=waittime,
-                file=file,
             ),
             daemon=True,
         )
@@ -757,47 +792,23 @@ trap write_status EXIT
             log_interval=log_interval,
             num_parallel=num_parallel,
             launch_interval=launch_interval,
-            file=file
         )
         thread.join()
 
         succeeded, failed = count
-        already_finished = len(command_list) - len(jobs)
-        if already_finished != 0:
-            if already_finished == 1:
-                sub = "job have"
-            else:
-                sub = "jobs has"
-            lock_print(
-                f"[bg|{group_id}|End|{datetime.datetime.now():{dfmt}}]"
-                f" {already_finished} {sub} already finished",
-                file=file,
-            )
+        lock_print(
+            log_format(
+                message=f"success/fail/skip = {succeeded}/{failed}/{already_finished}",
+                group_id=group_id,
+                status="End",
+            ),
+            color=RED if failed != 0 else GREEN,
+        )
 
         if failed != 0:
-            if failed == 1:
-                sub = "job has"
-            else:
-                sub = "jobs have"
-            lock_print(
-                f"[bg|{group_id}|End|{datetime.datetime.now():{dfmt}}]"
-                f" {failed}/{failed + succeeded} {sub} been failed: ",
-                file=file,
-                color=RED,
-            )
+            lock_print("Failed jobids:", color=RED)
             failed_message = " ".join(failed_jobs)
-            lock_print(failed_message, file=file, color=RED)
-        elif succeeded != 0:
-            if failed + succeeded == 1:
-                sub = "job has"
-            else:
-                sub = "jobs have"
-            lock_print(
-                f"[bg|{group_id}|End|{datetime.datetime.now():{dfmt}}]"
-                f" {failed + succeeded} {sub} successfully finished",
-                file=file,
-                color=GREEN,
-            )
+            lock_print(failed_message, color=RED)
 
 
 def clear_handler(args):
@@ -810,7 +821,16 @@ def start_and_clear(group_id):
     socket_file = CommandPoolServer.get_socket_file(group_id)
     with CommandPoolServer.get_socket() as client:
         client.connect(socket_file)
-        client.sendall(PROTO.CLEAR)
+        client.sendall(PROTO.CLEAR + PROTO.END)
+        data = client.recv(1024)
+        if data != PROTO.ACK + PROTO.END:
+            print_colored(
+                log_format(
+                    message=f"Received unexpected data: {data}",
+                    group_id=group_id,
+                    status="Error",
+                ),
+            )
 
 
 def add_handler(args):
@@ -820,29 +840,36 @@ def add_handler(args):
     add(group_id=args.group_id, command=command)
 
 
-def add(group_id, command):
-    server_start(group_id)
+def add(group_id, command, timeout=2):
+    check_server_running(group_id, timeout=timeout)
 
     socket_file = CommandPoolServer.get_socket_file(group_id)
     with CommandPoolServer.get_socket() as client:
         client.connect(socket_file)
-        client.sendall(PROTO.ADD + command.encode())
+        client.sendall(PROTO.ADD + command.encode() + PROTO.END)
+        data = client.recv(1024)
+        if data != PROTO.ACK + PROTO.END:
+            print_colored(
+                log_format(
+                    message=f"Received unexpected data: {data}",
+                    group_id=group_id,
+                    status="Error",
+                ),
+            )
 
 
 def dump_handler(args):
     dump(group_id=args.group_id, basedir=args.basedir, allow_same=args.allow_same)
 
 
-def sig_handler(signum, frame, exit_status=1) -> None:
-    sys.exit(exit_status)
-
-
-def stop_processes(processes, timeout=30):
+def stop_processes(processes, timeout=15):
     for p, slurm_jobid in processes:
         if p is not None:
             # NOTE: send_signal is non-blocking
             # NOTE: Do nothing if the process completed.
             p.send_signal(signal.SIGINT)
+        else:
+            subprocess.run(["scancel", f"{slurm_jobid}"])
 
     for p, slurm_jobid in processes:
         if p is not None:
@@ -850,12 +877,10 @@ def stop_processes(processes, timeout=30):
                 p.wait(timeout)
             except subprocess.TimeoutExpired:
                 print_colored(
-                    f"[bg|Clear|{datetime.datetime.now():{dfmt}}] Process(pid={p.pid}) has not yet been stopped. Killing the process...",
+                    log_format(message=f"Process(pid={p.pid}) has not yet been stopped. Killing the process..."),
                     color=RED,
-                    flush=True,
                 )
                 p.kill()
-
     # No wait for killing
 
 
@@ -878,6 +903,51 @@ def run_handler(args):
         raise
 
 
+def show_handler(args):
+    basedir = args.basedir
+    group_id = args.group_id
+    jobid = args.jobid
+    query = args.query
+    if jobid is None:
+        jobid_list = []
+        for command_file in (Path(basedir) / group_id).glob("*/command"):
+            _jobid = command_file.parent.name
+            jobid_list.append(_jobid)
+        print(" ".join(jobid_list))
+        return
+
+    if jobid in ["unfinished", "fail", "success"]:
+        if query is not None:
+            print("Warning: query is ignored: {query}")
+
+        jobid_list = []
+        for command_file in (Path(basedir) / group_id).glob("*/command"):
+            _jobid = command_file.parent.name
+            status_file = command_file.parent / "status"
+            if status_file.exists():
+                status = int(status_file.read_text().strip())
+                if jobid == "fail" and status != 0:
+                    jobid_list.append(_jobid)
+                elif jobid == "success" and status == 0:
+                    jobid_list.append(_jobid)
+            else:
+                jobid_list.append(_jobid)
+        print(" ".join(jobid_list))
+        return
+
+    if query is None:
+        query = "output"
+
+    jobdir = Path(basedir) / group_id / jobid
+    if (jobdir / query).exists():
+        print((jobdir / query).read_text())
+        print(f"({jobdir / query})")
+        return
+    else:
+        print(f"{jobdir / query} doesn't exist")
+        return
+
+
 def show_server_log_handler(args):
     logfile = Path(CommandPoolServer.get_log_file(args.group_id))
     if logfile.exists():
@@ -887,7 +957,38 @@ def show_server_log_handler(args):
         print(f"(Logfile is not existing: {logfile})")
 
 
-if __name__ == "__main__":
+def tpl_handler(args, parser_clear, parser_add, parser_dump, parser_run):
+    print(
+        f"""#!/usr/bin/env bash
+group_id='{"group_id" if args.group_id is None else args.group_id}'
+basedir='{parser_dump.get_default("basedir")}'
+
+pybg clean "${{group_id}}"
+
+pybg add "${{group_id}}" [write command]
+
+pybg dump --basedir "${{basedir}}" "${{group_id}}"
+pybg run --basedir "${{basedir}}" --rerun '{parser_run.get_default("rerun")}' --num-parallel '{parser_run.get_default("num_parallel")}' --log-interval '{parser_run.get_default("log_interval")}' "${{group_id}}"\
+"""
+    )
+
+
+def str2bool(arg):
+    if arg.lower() in ["true", "1"]:
+        return True
+    elif arg.lower() in ["false", "0"]:
+        return False
+    raise TypeError(f"true or false are expected, but got {arg}")
+
+
+def str_or_none(arg):
+    if arg.lower() in ["none", "null"]:
+        return None
+    else:
+        return arg
+
+
+def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
 
@@ -896,26 +997,33 @@ if __name__ == "__main__":
     parser_clear.set_defaults(handler=clear_handler)
 
     parser_add = subparsers.add_parser("add")
-    parser_add.add_argument("--slurm-options", "-s", help="")
+    parser_add.add_argument("--slurm-options", "-s", type=str_or_none, help="")
     parser_add.add_argument("group_id")
     parser_add.add_argument("command", nargs=argparse.REMAINDER)
     parser_add.set_defaults(handler=add_handler)
 
     parser_dump = subparsers.add_parser("dump")
     parser_dump.add_argument("group_id")
-    parser_dump.add_argument("--basedir", default="pybg")
+    parser_dump.add_argument("--basedir", default="pybg_logs")
     parser_dump.add_argument("--allow-same", "-a", action="store_true", help="")
     parser_dump.set_defaults(handler=dump_handler)
 
     parser_run = subparsers.add_parser("run")
     parser_run.add_argument("group_id")
-    parser_run.add_argument("--basedir", default="pybg")
-    parser_run.add_argument("--rerun", "-r", action="store_true")
-    parser_run.add_argument("--num-parallel", "-n", default=10, type=int)
+    parser_run.add_argument("--basedir", default="pybg_logs")
+    parser_run.add_argument("--rerun", "-r", type=str2bool, default=True)
+    parser_run.add_argument("--num-parallel", "-n", default=50, type=int)
     parser_run.add_argument("--launch-interval", default=0.1, type=float)
     parser_run.add_argument("--waittime", default=0.02, type=float)
-    parser_run.add_argument("--log_interval", default=30.0, type=float)
+    parser_run.add_argument("--log-interval", default=300.0, type=float)
     parser_run.set_defaults(handler=run_handler)
+
+    parser_show = subparsers.add_parser("show")
+    parser_show.add_argument("--basedir", default="pybg_logs")
+    parser_show.add_argument("group_id")
+    parser_show.add_argument("jobid", nargs="?")
+    parser_show.add_argument("query", nargs="?", choices=["output", "status", "command"])
+    parser_show.set_defaults(handler=show_handler)
 
     parser_show_server_log = subparsers.add_parser("show-server-log")
     parser_show_server_log.add_argument("group_id")
@@ -928,8 +1036,24 @@ if __name__ == "__main__":
     )
     parser_show_server_log.set_defaults(handler=show_server_log_handler)
 
+    parser_tpl = subparsers.add_parser("tpl")
+    parser_tpl.add_argument("group_id", nargs="?")
+    parser_tpl.set_defaults(
+        handler=partial(
+            tpl_handler,
+            parser_clear=parser_clear,
+            parser_add=parser_add,
+            parser_dump=parser_dump,
+            parser_run=parser_run,
+        )
+    )
+
     args = parser.parse_args()
     if hasattr(args, "handler"):
         args.handler(args)
     else:
         parser.print_help()
+
+
+if __name__ == "__main__":
+    main()
