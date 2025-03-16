@@ -99,8 +99,52 @@ If you want to rerun all jobs, including those that succeeded, set the `--rerun`
 
 
 ```sh
-pybg run --rerun true group_id
+pybg run --rerun true run group_id
 ```
+
+### Automatic submittion for failed jobs
+
+If a job fails and ends, it can be automatically resubmitted. You can specify the number of times to resubmit the job, as shown below. By default, it is set to 0, meaning no resubmission will occur.
+
+```sh
+pybg run --retry 3 run group_id
+```
+
+If -1 is specified, the job will be resubmitted indefinitely.
+
+```sh
+pybg run --retry -1 run group_id
+```
+
+### Tips: Using controling operator of Unix shell
+If you'd like to use some controling operator, such `;`, `&&`, `||`, etc. in a command, please use shell command with `-c`.
+
+<table>
+<tr>
+<th>Bad</th>
+<th>Good</th>
+</tr>
+<tr>
+<td>
+<sub>
+
+```sh
+pybg add echo AAA; exit 0
+```
+
+</sub>
+<td>
+<sub>
+
+```sh
+pybg add sh -c "echo AAA; exit 0"
+```
+</sub>
+</td>
+</tr>
+</table>
+
+
 
 ## Showing status
 

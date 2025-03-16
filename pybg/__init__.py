@@ -38,8 +38,19 @@ logger.addHandler(st_handler)
 dfmt = "%Y/%m/%d %H:%M:%S"
 
 
+def ordinal(n: int) -> str:
+    """
+    Convert an integer to its ordinal representation (e.g., 1 -> '1st', 2 -> '2nd', 3 -> '3rd', 4 -> '4th').
+    """
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+    return f"{n}{suffix}"
+
 def print_colored(text, *, color=None, **kwargs):
-    use_color    = sys.stdout.isatty()
+    use_color = sys.stdout.isatty()
     if use_color and color is not None:
         print(color + text + RESET, **kwargs)
     else:
@@ -372,26 +383,51 @@ class Runner:
     def __init__(self):
         self.subprocesses = []
 
+    @staticmethod
+    def squeue(slurm_jobid):
+        process = subprocess.Popen(
+            [
+                "squeue",
+                "--noheader",
+                "--job",
+                str(slurm_jobid),
+                "-o",
+                "%T",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout, stderr = process.communicate()
+        stdout = stdout.decode()
+        stderr = stderr.decode()
+        # Job already finished
+        if (
+            process.returncode != 0
+            or stdout == ""
+            or stdout.strip() in ["COMPLETING", "CANCELLED", "FAILED", "TIMEOUT"]
+        ):
+            return False
+        else:
+            return True
+
     def write_status(
         self,
         group_id: str,
         failed_jobs,
         processes,
-        lock,
-        count,
-        count_lock,
-        lock_print,
+        success_fail_counter,
         event,
         waittime=0.02,
-        squeue_minimum_interval=5,
+        squeue_minimum_interval=2,
+        retry: int = 0,
     ):
 
         last_squeue_time = None
         while True:
-            with lock:
+            with self.lock:
                 _processes = processes.copy()
             finished = set()
-            for jobid, (process, command, jobdir, slurm_jobid) in _processes.items():
+            for jobid, (process, command, valid_command, jobdir, slurm_options, slurm_jobid, submit_counter) in _processes.items():
                 returncode = None
                 if slurm_jobid is None:
                     try:
@@ -410,11 +446,14 @@ class Runner:
                         except:
                             returncode = 1
                     else:
-                        # If active_text is existing, the job is runnig
+                        # If active_text is existing, check the time interval instead of squeue command
+                        # to reduce the load of slurm server
                         if (jobdir / "active").exists():
 
                             time_from_last_update = time.time() - (jobdir / "active").stat().st_mtime
-                            if time_from_last_update > 10:
+                            # Double check using squeue command
+                            if time_from_last_update > 2.5 and not self.squeue(slurm_jobid):
+                                last_squeue_time = time.time()
                                 # Force sync
                                 list(jobdir.iterdir())
 
@@ -432,24 +471,10 @@ class Runner:
                         else:
                             # To reduce the load of slurm server, avoid excecuting squeue command within squeue_minimum_interval
                             if last_squeue_time is None or time.time() - last_squeue_time > squeue_minimum_interval:
-                                process = subprocess.Popen(
-                                    [
-                                        "squeue",
-                                        "--noheader",
-                                        "--job",
-                                        str(slurm_jobid),
-                                        "-o",
-                                        "%T",
-                                    ],
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE,
-                                )
                                 last_squeue_time = time.time()
-                                stdout, stderr = process.communicate()
-                                stdout = stdout.decode()
-                                stderr = stderr.decode()
+
                                 # Job already finished
-                                if process.returncode != 0 or stdout == "":
+                                if not self.squeue(slurm_jobid):
                                     # Force sync
                                     list(jobdir.iterdir())
 
@@ -465,9 +490,8 @@ class Runner:
 
                 if returncode is not None:
                     (Path(jobdir) / "status").write_text(f"{returncode}\n")
-                    finished.add(jobid)
                     if returncode != 0:
-                        lock_print(
+                        self.lock_print(
                             log_format(
                                 message=command,
                                 group_id=group_id,
@@ -476,11 +500,18 @@ class Runner:
                             ),
                             color=RED,
                         )
-                        with count_lock:
-                            count[1] += 1
-                        failed_jobs.add(jobid)
+
+                        if retry == -1 or retry >= submit_counter:
+                            self.submit(group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, submit_counter + 1)
+                        else:
+                            with self.count_lock:
+                                success_fail_counter[1] += 1
+
+                            failed_jobs.add(jobid)
+                            with self.lock:
+                                del processes[jobid]
                     else:
-                        lock_print(
+                        self.lock_print(
                             log_format(
                                 message=command,
                                 group_id=group_id,
@@ -489,93 +520,81 @@ class Runner:
                             ),
                             color=GREEN,
                         )
-                        with count_lock:
-                            count[0] += 1
+                        with self.count_lock:
+                            success_fail_counter[0] += 1
 
-            with lock:
-                for jobid in finished:
-                    del processes[jobid]
+                        with self.lock:
+                            del processes[jobid]
 
             time.sleep(waittime)
 
             if event.is_set():
                 break
 
-    def run_process(
-        self,
-        group_id,
-        processes,
-        jobs,
-        lock,
-        count,
-        count_lock,
-        lock_print,
-        event,
-        log_interval=300,
-        num_parallel=10,
-        launch_interval=0.05,
-    ):
-        st = time.time()
-        while True:
-            if len(jobs) > 0 and len(processes) <= num_parallel:
-                command, jobdir, slurm_options = jobs.pop()
-                logfile = Path(jobdir) / "output"
-                jobid = Path(jobdir).name
-                if slurm_options is None:
-                    flogfile = logfile.open("w")
-                    try:
-                        process = subprocess.Popen(shlex.split(command), stdout=flogfile, stderr=flogfile)
-                    except FileNotFoundError as e:
-                        flogfile.write(traceback.format_exc() + "\n")
-                        lock_print(
-                            log_format(
-                                message=f"Failed to execute command: {command}",
-                                group_id=group_id,
-                                jobid=jobid,
-                                status="Error",
-                            ),
-                            color=RED,
-                        )
-                        with count_lock:
-                            count[1] += 1
-                    else:
-                        slurm_jobid = None
-                        self.subprocesses.append((process, slurm_jobid))
+    def submit(self, group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, submit_counter):
+        logfile = Path(jobdir) / "output"
+        jobid = Path(jobdir).name
 
-                        lock_print(
-                            log_format(
-                                message=command,
-                                group_id=group_id,
-                                jobid=jobid,
-                                status=f"Submit(pid={process.pid})",
-                            ),
-                        )
-                        with lock:
-                            processes[jobid] = (process, command, jobdir, slurm_jobid)
+        if slurm_options is None:
+            flogfile = logfile.open("w")
+            try:
+                process = subprocess.Popen(shlex.split(valid_command), stdout=flogfile, stderr=flogfile)
+            except FileNotFoundError as e:
+                flogfile.write(traceback.format_exc() + "\n")
+                self.lock_print(
+                    log_format(
+                        message=f"Failed to execute command: {valid_command}",
+                        group_id=group_id,
+                        jobid=jobid,
+                        status="Error",
+                    ),
+                    color=RED,
+                )
+                with self.count_lock:
+                    success_fail_counter[1] += 1
+            else:
+                slurm_jobid = None
+                self.subprocesses.append((process, slurm_jobid))
 
+                if submit_counter > 1:
+                    resubmit_str = f", {ordinal(submit_counter)} retry"
                 else:
-                    # Using sbatch (Slurm batch script)
-                    sbatch_command = ["sbatch", "-o", logfile] + shlex.split(slurm_options)
-                    process = subprocess.Popen(
-                        sbatch_command,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
-                    active_text = jobdir / "active"
-                    status_text = jobdir / "status"
-                    for p in [active_text, status_text]:
-                        if p.exists():
-                            try:
-                                p.unlink()
-                            except FileNotFoundError:
-                                pass
-                    batch_script = f"""\
+                    resubmit_str = ""
+
+                self.lock_print(
+                    log_format(
+                        message=command,
+                        group_id=group_id,
+                        jobid=jobid,
+                        status=f"Submit(pid={process.pid}){resubmit_str}",
+                    ),
+                )
+                with self.lock:
+                    processes[jobid] = (process, command, valid_command, jobdir, slurm_options, slurm_jobid, submit_counter)
+
+        else:
+            # Using sbatch (Slurm batch script)
+            sbatch_command = ["sbatch", "-o", logfile] + shlex.split(slurm_options)
+            process = subprocess.Popen(
+                sbatch_command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            active_text = jobdir / "active"
+            status_text = jobdir / "status"
+            for p in [active_text, status_text]:
+                if p.exists():
+                    try:
+                        p.unlink()
+                    except FileNotFoundError:
+                        pass
+            batch_script = f"""\
 #!/usr/bin/env sh
 update_timestamp() {{
     while true; do
         touch '{active_text}'
-        sleep 5
+        sleep 1
     done
 
 }}
@@ -601,65 +620,91 @@ trap write_status TERM
 trap write_status QUIT
 trap write_status EXIT
 
-{command}
+{valid_command}
 """
-                    (jobdir / "batch_script").write_text(batch_script)
-                    stdout, stderr = process.communicate(batch_script.encode())
-                    # Failed to submit
-                    if process.returncode != 0:
-                        lock_print(
-                            log_format(
-                                message=f"{shlex.join(sbatch_command)}: {stderr.decode()}",
-                                group_id=group_id,
-                                jobid=jobid,
-                                status="Error",
-                            ),
-                            color=RED,
-                        )
-                    else:
+            (jobdir / "batch_script").write_text(batch_script)
+            stdout, stderr = process.communicate(batch_script.encode())
+            # Failed to submit
+            if process.returncode != 0:
+                self.lock_print(
+                    log_format(
+                        message=f"{shlex.join(sbatch_command)}: {stderr.decode()}",
+                        group_id=group_id,
+                        jobid=jobid,
+                        status="Error",
+                    ),
+                    color=RED,
+                )
+                with self.count_lock:
+                    success_fail_counter[1] += 1
+            else:
 
-                        def get_jobid(stdout):
-                            # Derive jobid from output
-                            # e.g. Submitted batch job 1346323
-                            slurm_jobid = None
-                            for token in stdout.decode().strip().split():
-                                try:
-                                    _slurm_jobid = int(token)
-                                except ValueError:
-                                    pass
-                                else:
-                                    if slurm_jobid is None:
-                                        slurm_jobid = _slurm_jobid
-                                    else:
-                                        slurm_jobid = None
-                                        break
-                            return slurm_jobid
-
-                        slurm_jobid = get_jobid(stdout)
-
-                        if slurm_jobid is None:
-                            lock_print(
-                                log_format(
-                                    message=f"Unexpected output from sbatch: {stderr.decode()}",
-                                    group_id=group_id,
-                                    jobid=jobid,
-                                    status="Error",
-                                ),
-                            )
+                def get_jobid(stdout):
+                    # Derive jobid from output
+                    # e.g. Submitted batch job 1346323
+                    slurm_jobid = None
+                    for token in stdout.decode().strip().split():
+                        try:
+                            _slurm_jobid = int(token)
+                        except ValueError:
+                            pass
                         else:
-                            self.subprocesses.append((None, slurm_jobid))
-                            jobid = Path(jobdir).name
-                            with lock:
-                                processes[jobid] = (None, command, jobdir, slurm_jobid)
+                            if slurm_jobid is None:
+                                slurm_jobid = _slurm_jobid
+                            else:
+                                slurm_jobid = None
+                                break
+                    return slurm_jobid
 
-                            lock_print(
-                                log_format(
-                                    message=f"{command} #SBATCH {slurm_options}",
-                                    group_id=group_id,
-                                    jobid=jobid,
-                                    status=f"Submit(slurm_jobid={slurm_jobid})",
-                                ),
-                            )
+                slurm_jobid = get_jobid(stdout)
+
+                if slurm_jobid is None:
+                    self.lock_print(
+                        log_format(
+                            message=f"Unexpected output from sbatch: {stderr.decode()}",
+                            group_id=group_id,
+                            jobid=jobid,
+                            status="Error",
+                        ),
+                    )
+                    with self.count_lock:
+                        success_fail_counter[1] += 1
+                else:
+                    self.subprocesses.append((None, slurm_jobid))
+                    jobid = Path(jobdir).name
+                    with self.lock:
+                        processes[jobid] = (None, command, valid_command, jobdir, slurm_options, slurm_jobid, submit_counter)
+
+                    if submit_counter > 1:
+                        resubmit_str = f", {ordinal(submit_counter)} retry"
+                    else:
+                        resubmit_str = ""
+
+                    self.lock_print(
+                        log_format(
+                            message=command,
+                            group_id=group_id,
+                            jobid=jobid,
+                            status=f"Submit(slurm_jobid={slurm_jobid}){resubmit_str}",
+                        ),
+                    )
+
+    def run_process(
+        self,
+        group_id,
+        processes,
+        jobs,
+        success_fail_counter,
+        event,
+        log_interval=300,
+        num_parallel=10,
+        launch_interval=0.05,
+    ):
+        st = time.time()
+        while True:
+            if len(jobs) > 0 and len(processes) <= num_parallel:
+                command, valid_command, jobdir, slurm_options = jobs.pop()
+                self.submit(group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, 1)
 
             # All jobs has been finished
             if len(jobs) == 0 and len(processes) == 0:
@@ -667,13 +712,13 @@ trap write_status EXIT
                 break
 
             if time.time() - st > log_interval:
-                with count_lock:
-                    succeeded, failed = count
+                with self.count_lock:
+                    succeeded, failed = success_fail_counter
                 queue = len(jobs)
-                with lock:
+                with self.lock:
                     running = len(processes)
 
-                lock_print(
+                self.lock_print(
                     log_format(
                         message=f"queue/running/success/fail = {queue}/{running}/{succeeded}/{failed}",
                         group_id=group_id,
@@ -692,6 +737,7 @@ trap write_status EXIT
         launch_interval=0.1,
         waittime=0.02,
         log_interval=30,
+        retry: int=0,
     ):
 
         basedir = Path(basedir)
@@ -703,12 +749,12 @@ trap write_status EXIT
         else:
             raise RuntimeError(f'{str(groupdir / "commands")} is not existing')
 
-        lock_print = LockPrint()
-        lock_print(
+        self.lock_print = LockPrint()
+        self.lock_print(
             log_format(
                 message=f"basedir={basedir}, rerun={rerun}, num_parallel={num_parallel}",
                 group_id=group_id,
-                status="Start"
+                status="Start",
             ),
         )
 
@@ -755,17 +801,15 @@ trap write_status EXIT
                 status = -1
 
             if rerun or status != 0:
-                jobs.append((valid_command, jobdir, slurm_options))
+                jobs.append((command, valid_command, jobdir, slurm_options))
             else:
-                lock_print(
-                    log_format(message=valid_command, group_id=group_id, jobid=jobid, status="Skip")
-                )
+                self.lock_print(log_format(message=valid_command, group_id=group_id, jobid=jobid, status="Skip"))
         del counter
         already_finished = len(command_list) - len(jobs)
 
-        lock = threading.Lock()
-        count_lock = threading.Lock()
-        count = [0, 0]
+        self.lock = threading.Lock()
+        self.count_lock = threading.Lock()
+        success_fail_counter = [0, 0]
         event = threading.Event()
         processes = dict()
         failed_jobs = set()
@@ -776,12 +820,10 @@ trap write_status EXIT
                 group_id=group_id,
                 processes=processes,
                 failed_jobs=failed_jobs,
-                lock=lock,
-                count=count,
-                count_lock=count_lock,
-                lock_print=lock_print,
+                success_fail_counter=success_fail_counter,
                 event=event,
                 waittime=waittime,
+                retry=retry,
             ),
             daemon=True,
         )
@@ -791,10 +833,7 @@ trap write_status EXIT
             group_id=group_id,
             processes=processes,
             jobs=jobs,
-            lock=lock,
-            count=count,
-            count_lock=count_lock,
-            lock_print=lock_print,
+            success_fail_counter=success_fail_counter,
             event=event,
             log_interval=log_interval,
             num_parallel=num_parallel,
@@ -802,8 +841,8 @@ trap write_status EXIT
         )
         thread.join()
 
-        succeeded, failed = count
-        lock_print(
+        succeeded, failed = success_fail_counter
+        self.lock_print(
             log_format(
                 message=f"success/fail/skip = {succeeded}/{failed}/{already_finished}",
                 group_id=group_id,
@@ -813,9 +852,9 @@ trap write_status EXIT
         )
 
         if failed != 0:
-            lock_print("Failed jobids:", color=RED)
+            self.lock_print("Failed jobids:", color=RED)
             failed_message = " ".join(failed_jobs)
-            lock_print(failed_message, color=RED)
+            self.lock_print(failed_message, color=RED)
 
 
 def start_handler(args):
@@ -902,6 +941,7 @@ def run_handler(args):
             launch_interval=args.launch_interval,
             waittime=args.waittime,
             log_interval=args.log_interval,
+            retry=args.retry,
         )
     except KeyboardInterrupt:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -948,7 +988,7 @@ def show_handler(args):
     jobdir = Path(basedir) / group_id / jobid
     if (jobdir / query).exists():
         print((jobdir / query).read_text())
-        print(f"({jobdir / query})")
+        print(f"( {jobdir / query} )")
         return
     else:
         print(f"{jobdir / query} doesn't exist")
@@ -1004,7 +1044,9 @@ def main():
     parser_start.set_defaults(handler=start_handler)
 
     parser_add = subparsers.add_parser("add")
-    parser_add.add_argument("--slurm-options", "-s", type=str_or_none, help="When this option is used, jobs can be submitted using sbatch")
+    parser_add.add_argument(
+        "--slurm-options", "-s", type=str_or_none, help="When this option is used, jobs can be submitted using sbatch"
+    )
     parser_add.add_argument("group_id")
     parser_add.add_argument("command", nargs=argparse.REMAINDER)
     parser_add.set_defaults(handler=add_handler)
@@ -1038,6 +1080,13 @@ def main():
         default=300.0,
         type=float,
         help="Displays the status of the submitted jobs at specified intervals",
+    )
+    parser_run.add_argument(
+        "--retry",
+        type=int,
+        help="Specifies the maximum number of times to resubmit a job when it fails."
+        "If set to 0, the job will not be resubmitted.  "
+        "If set to -1, resubmission will continue indefinitely.",
     )
     parser_run.set_defaults(handler=run_handler)
 
