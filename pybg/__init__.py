@@ -49,6 +49,7 @@ def ordinal(n: int) -> str:
 
     return f"{n}{suffix}"
 
+
 def print_colored(text, *, color=None, **kwargs):
     use_color = sys.stdout.isatty()
     if use_color and color is not None:
@@ -427,7 +428,15 @@ class Runner:
             with self.lock:
                 _processes = processes.copy()
             finished = set()
-            for jobid, (process, command, valid_command, jobdir, slurm_options, slurm_jobid, submit_counter) in _processes.items():
+            for jobid, (
+                process,
+                command,
+                valid_command,
+                jobdir,
+                slurm_options,
+                slurm_jobid,
+                submit_counter,
+            ) in _processes.items():
                 returncode = None
                 if slurm_jobid is None:
                     try:
@@ -502,7 +511,16 @@ class Runner:
                         )
 
                         if retry == -1 or retry >= submit_counter:
-                            self.submit(group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, submit_counter + 1)
+                            self.submit(
+                                group_id,
+                                command,
+                                valid_command,
+                                jobdir,
+                                slurm_options,
+                                processes,
+                                success_fail_counter,
+                                submit_counter + 1,
+                            )
                         else:
                             with self.count_lock:
                                 success_fail_counter[1] += 1
@@ -531,7 +549,9 @@ class Runner:
             if event.is_set():
                 break
 
-    def submit(self, group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, submit_counter):
+    def submit(
+        self, group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, submit_counter
+    ):
         logfile = Path(jobdir) / "output"
         jobid = Path(jobdir).name
 
@@ -570,7 +590,15 @@ class Runner:
                     ),
                 )
                 with self.lock:
-                    processes[jobid] = (process, command, valid_command, jobdir, slurm_options, slurm_jobid, submit_counter)
+                    processes[jobid] = (
+                        process,
+                        command,
+                        valid_command,
+                        jobdir,
+                        slurm_options,
+                        slurm_jobid,
+                        submit_counter,
+                    )
 
         else:
             # Using sbatch (Slurm batch script)
@@ -673,7 +701,15 @@ trap write_status EXIT
                     self.subprocesses.append((None, slurm_jobid))
                     jobid = Path(jobdir).name
                     with self.lock:
-                        processes[jobid] = (None, command, valid_command, jobdir, slurm_options, slurm_jobid, submit_counter)
+                        processes[jobid] = (
+                            None,
+                            command,
+                            valid_command,
+                            jobdir,
+                            slurm_options,
+                            slurm_jobid,
+                            submit_counter,
+                        )
 
                     if submit_counter > 1:
                         resubmit_str = f", {ordinal(submit_counter)} retry"
@@ -737,7 +773,7 @@ trap write_status EXIT
         launch_interval=0.1,
         waittime=0.02,
         log_interval=30,
-        retry: int=0,
+        retry: int = 0,
     ):
 
         basedir = Path(basedir)
