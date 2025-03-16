@@ -253,7 +253,7 @@ class CommandPoolServer:
                         pass
 
 
-def check_server_running(group_id, timeout=10):
+def check_server_running(group_id: str, timeout=10):
     socket_file = CommandPoolServer.get_socket_file(group_id)
     # Wait until the server has started
     start_time = time.time()
@@ -264,7 +264,7 @@ def check_server_running(group_id, timeout=10):
             time.sleep(0.01)
 
 
-def server_start(group_id, timeout=10):
+def server_start(group_id: str, timeout=10):
     socket_file = CommandPoolServer.get_socket_file(group_id)
     with CommandPoolServer.get_socket() as client:
         if client.connect_ex(socket_file) != 0:
@@ -281,7 +281,7 @@ def server_start(group_id, timeout=10):
     check_server_running(group_id, timeout=timeout)
 
 
-def dump(group_id, basedir, timeout=1, allow_same=False):
+def dump(group_id: str, basedir: str, timeout=1, allow_same=False):
     check_server_running(group_id, timeout=timeout)
 
     basedir = Path(basedir)
@@ -351,7 +351,7 @@ def dump(group_id, basedir, timeout=1, allow_same=False):
 
 
 def log_format(
-    message,
+    message: str,
     group_id=None,
     jobid=None,
     status=None,
@@ -374,7 +374,7 @@ class Runner:
 
     def write_status(
         self,
-        group_id,
+        group_id: str,
         failed_jobs,
         processes,
         lock,
@@ -513,7 +513,7 @@ class Runner:
         event,
         log_interval=300,
         num_parallel=10,
-        launch_interval=0.1,
+        launch_interval=0.05,
     ):
         st = time.time()
         while True:
@@ -585,14 +585,14 @@ write_status() {{
     exit $?
 }}
 # For logging
-echo '# {slurm_options}'
-echo "# $(hostname)"
 echo "# $(date)"
+echo "# $(hostname)"
 echo "# $(pwd)"
+echo '# {slurm_options}'
 
 rm -f '{status_text}'
 # Force sync
-ls '{jobdir}' &> /dev/null
+ls '{jobdir}' > /dev/null 2>&1
 
 update_timestamp &
 PID=$!
@@ -704,6 +704,13 @@ trap write_status EXIT
             raise RuntimeError(f'{str(groupdir / "commands")} is not existing')
 
         lock_print = LockPrint()
+        lock_print(
+            log_format(
+                message=f"basedir={basedir}, rerun={rerun}, num_parallel={num_parallel}",
+                group_id=group_id,
+                status="Start"
+            ),
+        )
 
         jobs = []
         counter = Counter()
@@ -742,7 +749,7 @@ trap write_status EXIT
             if status_text.exists():
                 try:
                     status = int(status_text.read_text())
-                except:
+                except ValueError:
                     status = -1
             else:
                 status = -1
@@ -751,7 +758,7 @@ trap write_status EXIT
                 jobs.append((valid_command, jobdir, slurm_options))
             else:
                 lock_print(
-                    f"[bg|{group_id}|Skip(jobid={jobid})|{datetime.datetime.now():{dfmt}}]" f" {valid_command}",
+                    log_format(message=valid_command, group_id=group_id, jobid=jobid, status="Skip")
                 )
         del counter
         already_finished = len(command_list) - len(jobs)
@@ -811,11 +818,11 @@ trap write_status EXIT
             lock_print(failed_message, color=RED)
 
 
-def clear_handler(args):
-    start_and_clear(group_id=args.group_id)
+def start_handler(args):
+    start_and_start(group_id=args.group_id)
 
 
-def start_and_clear(group_id):
+def start_and_start(group_id):
     server_start(group_id)
 
     socket_file = CommandPoolServer.get_socket_file(group_id)
@@ -957,7 +964,7 @@ def show_server_log_handler(args):
         print(f"(Logfile is not existing: {logfile})")
 
 
-def tpl_handler(args, parser_clear, parser_add, parser_dump, parser_run):
+def tpl_handler(args, parser_start, parser_add, parser_dump, parser_run):
     print(
         f"""#!/usr/bin/env bash
 group_id='{"group_id" if args.group_id is None else args.group_id}'
@@ -989,15 +996,15 @@ def str_or_none(arg):
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     subparsers = parser.add_subparsers()
 
-    parser_clear = subparsers.add_parser("clear")
-    parser_clear.add_argument("group_id")
-    parser_clear.set_defaults(handler=clear_handler)
+    parser_start = subparsers.add_parser("start")
+    parser_start.add_argument("group_id")
+    parser_start.set_defaults(handler=start_handler)
 
     parser_add = subparsers.add_parser("add")
-    parser_add.add_argument("--slurm-options", "-s", type=str_or_none, help="")
+    parser_add.add_argument("--slurm-options", "-s", type=str_or_none, help="When this option is used, jobs can be submitted using sbatch")
     parser_add.add_argument("group_id")
     parser_add.add_argument("command", nargs=argparse.REMAINDER)
     parser_add.set_defaults(handler=add_handler)
@@ -1005,27 +1012,43 @@ def main():
     parser_dump = subparsers.add_parser("dump")
     parser_dump.add_argument("group_id")
     parser_dump.add_argument("--basedir", default="pybg_logs")
-    parser_dump.add_argument("--allow-same", "-a", action="store_true", help="")
+    parser_dump.add_argument(
+        "--allow-same", "-a", action="store_true", help="Specifies whether to register the same command"
+    )
     parser_dump.set_defaults(handler=dump_handler)
 
     parser_run = subparsers.add_parser("run")
     parser_run.add_argument("group_id")
     parser_run.add_argument("--basedir", default="pybg_logs")
-    parser_run.add_argument("--rerun", "-r", type=str2bool, default=True)
-    parser_run.add_argument("--num-parallel", "-n", default=50, type=int)
-    parser_run.add_argument("--launch-interval", default=0.1, type=float)
-    parser_run.add_argument("--waittime", default=0.02, type=float)
-    parser_run.add_argument("--log-interval", default=300.0, type=float)
+    parser_run.add_argument(
+        "--rerun", "-r", type=str2bool, default=False, help="Specifies whether to retry previously failed jobs"
+    )
+    parser_run.add_argument(
+        "--num-parallel", "-n", default=50, type=int, help="The maximum number of jobs executed in parallel at a time"
+    )
+    parser_run.add_argument(
+        "--launch-interval",
+        default=0.05,
+        type=float,
+        help="To reduce the load, waits for the specified number of seconds each time a job is submitted",
+    )
+    parser_run.add_argument("--waittime", default=0.1, type=float)
+    parser_run.add_argument(
+        "--log-interval",
+        default=300.0,
+        type=float,
+        help="Displays the status of the submitted jobs at specified intervals",
+    )
     parser_run.set_defaults(handler=run_handler)
 
-    parser_show = subparsers.add_parser("show")
+    parser_show = subparsers.add_parser("show", help="Shows the output or status of jobs")
     parser_show.add_argument("--basedir", default="pybg_logs")
     parser_show.add_argument("group_id")
     parser_show.add_argument("jobid", nargs="?")
     parser_show.add_argument("query", nargs="?", choices=["output", "status", "command"])
     parser_show.set_defaults(handler=show_handler)
 
-    parser_show_server_log = subparsers.add_parser("show-server-log")
+    parser_show_server_log = subparsers.add_parser("show-server-log", help="Shows the log of CommandPoolServer")
     parser_show_server_log.add_argument("group_id")
     parser_show_server_log.add_argument(
         "--line",
@@ -1036,12 +1059,12 @@ def main():
     )
     parser_show_server_log.set_defaults(handler=show_server_log_handler)
 
-    parser_tpl = subparsers.add_parser("tpl")
+    parser_tpl = subparsers.add_parser("tpl", help="Generates a template shell script")
     parser_tpl.add_argument("group_id", nargs="?")
     parser_tpl.set_defaults(
         handler=partial(
             tpl_handler,
-            parser_clear=parser_clear,
+            parser_start=parser_start,
             parser_add=parser_add,
             parser_dump=parser_dump,
             parser_run=parser_run,

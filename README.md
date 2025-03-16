@@ -7,17 +7,16 @@ Key features:
 - Management of job output logs
 - Controling of the number of concurrently running jobs
 - Re-execution of failed jobs
-- Support for job submission via Slurm
+- Support for job submission via Slurm Workload Manage
 
 ## Install
 
 ```sh
-git clone https://github.com/kamo-naoyuki/pybg
-pip install ./pybg
+pip install git+https://github.com/kamo-naoyuki/pybg
 ```
 
-[!CAUTION]
-Windows is not supported
+> [!CAUTION]
+> Windows is not supported
 
 ## Example
 
@@ -31,8 +30,9 @@ Windows is not supported
 <sub>
 
 ```sh
+#!/bin/sh
 echo Hello World &
-group sleep 40 &
+sleep 40 &
 python -c "print('This is python')" &
 wait
 ```
@@ -42,16 +42,17 @@ wait
 <sub>
 
 ```sh
-# 1. Clear all commands from the pool server
-pybg clear group
+#!/bin/sh
+# 1. Start command pool server or clear all commands from the server
+pybg start group_id
 # 2. Register jobs to the server
-pybg add group echo Hello World
-pybg add group sleep 40
-pybg add group python -c "print('This is python')"
-# 3. Dump commands in text and stop the pool server
-pybg write group
+pybg add group_id echo Hello World
+pybg add group_id sleep 40
+pybg add group_id python -c "print('This is python')"
+# 3. Dump commands in text and stop the server
+pybg write group_id
 # 4 Run commands
-pybg run group
+pybg run group_id
 ```
 
 </sub>
@@ -60,10 +61,9 @@ pybg run group
 </table>
 
 
+### Template generation
 
-### Option
-
-## Template generation
+Since job execution with Pybg is not possible without calling multiple Pybg subcommands, it supports generating shell scripts that describe these basic steps.
 
 
 ```sh
@@ -73,12 +73,75 @@ pybg tpl > run.sh
 
 ## Showing
 
+- Showing the output of the job
+
 
 ```sh
+pybg show <group-id> <jobid>
 ```
 
+- Showing the exit-status of the job if the job has been finished
 
 
-### Slurm
+```sh
+pybg show <group-id> <jobid> status
+```
 
-### Internal behaviour
+- Showing the command of the job
+
+```sh
+pybg show <group-id> <jobid> command
+```
+
+- Showing the jobids of the jobs-group
+
+```sh
+pybg show <group-id>
+```
+
+- Showing the jobids of failed/succeeded/unfinished jobs
+
+```sh
+pybg show <group-id> <failed/succeeded/unfinished>
+```
+### Suppor for Slurm Workload Manager
+
+Pybg supports job submission via Slurm Workload Manager.
+While it is possible to submit jobs by directly calling `sbatch` or `srun` from Pybg, these commands cannot be terminated if Pybg exits abnormally.
+
+<table>
+<tr>
+<th>Direct submission via `srun`</th>
+<th>Using `--slurm-option`</th>
+<th>Equivalent to `--slurm-option`</th>
+</tr>
+<tr>
+<td>
+<sub>
+
+```sh
+pybg add srun -p slurm_partition -c 3 sleep 10
+```
+
+</sub>
+<td>
+<sub>
+
+```sh
+pybg add --slurm-option "-p slurm_partition -c 3" sleep 10
+```
+
+</sub>
+</td>
+<td>
+<sub>
+
+```sh
+pybg add sleep 10 "#SBATCH -p slurm_partition -c 3"
+```
+
+</sub>
+</td>
+</tr>
+</table>
+
