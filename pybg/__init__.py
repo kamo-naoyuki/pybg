@@ -39,7 +39,7 @@ dfmt = "%Y/%m/%d %H:%M:%S"
 
 
 def print_colored(text, *, color=None, **kwargs):
-    use_color    = sys.stdout.isatty()
+    use_color = sys.stdout.isatty()
     if use_color and color is not None:
         print(color + text + RESET, **kwargs)
     else:
@@ -708,7 +708,7 @@ trap write_status EXIT
             log_format(
                 message=f"basedir={basedir}, rerun={rerun}, num_parallel={num_parallel}",
                 group_id=group_id,
-                status="Start"
+                status="Start",
             ),
         )
 
@@ -757,9 +757,7 @@ trap write_status EXIT
             if rerun or status != 0:
                 jobs.append((valid_command, jobdir, slurm_options))
             else:
-                lock_print(
-                    log_format(message=valid_command, group_id=group_id, jobid=jobid, status="Skip")
-                )
+                lock_print(log_format(message=valid_command, group_id=group_id, jobid=jobid, status="Skip"))
         del counter
         already_finished = len(command_list) - len(jobs)
 
@@ -1004,7 +1002,9 @@ def main():
     parser_start.set_defaults(handler=start_handler)
 
     parser_add = subparsers.add_parser("add")
-    parser_add.add_argument("--slurm-options", "-s", type=str_or_none, help="When this option is used, jobs can be submitted using sbatch")
+    parser_add.add_argument(
+        "--slurm-options", "-s", type=str_or_none, help="When this option is used, jobs can be submitted using sbatch"
+    )
     parser_add.add_argument("group_id")
     parser_add.add_argument("command", nargs=argparse.REMAINDER)
     parser_add.set_defaults(handler=add_handler)
