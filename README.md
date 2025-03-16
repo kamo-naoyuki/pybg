@@ -61,6 +61,38 @@ pybg run group_id
 </table>
 
 
+I won’t go into much detail, but please confirm that the list of commands registered under `pybg/group_id/commands` is correctly recorded.
+
+
+```sh
+cat pybg/group_id/commands
+```
+
+`pybg start`, `pybg add`, and `pybg dump` are merely support commands for creating this text file.
+In reality, once this file exists, jobs can be executed using only `pybg run`.
+
+This means that users can edit the text file manually, allowing for fine-grained modifications to jobs later.
+
+
+### Run only failed jobs
+
+The most important feature of Pybg is its ability to manage job success and failure.
+If some of the jobs you submitted succeed while others fail, you will need to rerun only the failed jobs.
+
+With Pybg, you can easily retry failed jobs without any extra effort.
+
+
+```sh
+pybg run group_id
+```
+
+If you want to rerun all jobs, including those that succeeded, set the `--rerun` option to true.
+
+
+```sh
+pybg run --rerun true group_id
+```
+
 ### Template generation
 
 Since job execution with Pybg is not possible without calling multiple Pybg subcommands, it supports generating shell scripts that describe these basic steps.
@@ -71,7 +103,7 @@ pybg tpl > run.sh
 ```
 
 
-## Showing
+## Showing status
 
 - Showing the output of the job
 
@@ -113,7 +145,7 @@ While it is possible to submit jobs by directly calling `sbatch` or `srun` from 
 <tr>
 <th>Direct submission via `srun`</th>
 <th>Using `--slurm-option`</th>
-<th>Equivalent to `--slurm-option`</th>
+<th>Adding `#SBATCH`, which is equivalent to `--slurm-option`</th>
 </tr>
 <tr>
 <td>
@@ -145,3 +177,7 @@ pybg add sleep 10 "#SBATCH -p slurm_partition -c 3"
 </tr>
 </table>
 
+
+Also, pay attention to the command at the far right.
+When using `--slurm-option <option>` followed by `pybg dump`, you should see that the command in the commands list includes `#SBATCH <option>`.
+In fact, adding `#SBATCH <option>` with `pybg add` will produce exactly the same behavior.
