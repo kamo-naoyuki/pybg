@@ -1,4 +1,6 @@
 # Pybg: Parallel job management tool
+[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/kamo-naoyuki/pybg/main.svg)](https://results.pre-commit.ci/latest/github/kamo-naoyuki/pybg/main)
+
 ## What is this?
 In Unix shell scripts, commands can be executed in parallel using background processes, but pybg simplifies job management with additional features.
 
