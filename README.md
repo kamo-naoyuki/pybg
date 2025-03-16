@@ -1,4 +1,4 @@
-# Pybg: Parallel job execution for shell scripts
+# Pybg: Parallel job management tool
 ## What is this?
 In Unix shell scripts, commands can be executed in parallel using background processes, but pybg simplifies job management with additional features.
 
@@ -7,7 +7,7 @@ Key features:
 - Management of job output logs
 - Controling of the number of concurrently running jobs
 - Re-execution of failed jobs
-- Support for job submission via Slurm Workload Manage
+- Support for job submission via `Slurm Workload Manage`
 
 ## Install
 
@@ -43,7 +43,7 @@ wait
 
 ```sh
 #!/bin/sh
-# 1. Start command pool server or clear all commands from the server
+# 1. Start command pool server or clear all commands
 pybg start group_id
 # 2. Register jobs to the server
 pybg add group_id echo Hello World
@@ -61,7 +61,7 @@ pybg run group_id
 </table>
 
 
-I won’t go into much detail, but please confirm that the list of commands registered under `pybg/group_id/commands` is correctly recorded.
+Please confirm that the list of commands registered under `pybg/group_id/commands` is correctly recorded.
 
 
 ```sh
@@ -73,6 +73,13 @@ In reality, once this file exists, jobs can be executed using only `pybg run`.
 
 This means that users can edit the text file manually, allowing for fine-grained modifications to jobs later.
 
+### Template generation
+
+The basic usage of Pybg is somewhat formulaic or template-like. To simplify this, Pybg supports generating a shell script that describes these fundamental usage steps.
+
+```sh
+pybg tpl > run.sh
+```
 
 ### Run only failed jobs
 
@@ -92,16 +99,6 @@ If you want to rerun all jobs, including those that succeeded, set the `--rerun`
 ```sh
 pybg run --rerun true group_id
 ```
-
-### Template generation
-
-Since job execution with Pybg is not possible without calling multiple Pybg subcommands, it supports generating shell scripts that describe these basic steps.
-
-
-```sh
-pybg tpl > run.sh
-```
-
 
 ## Showing status
 
