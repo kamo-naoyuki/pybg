@@ -39,7 +39,7 @@ dfmt = "%Y/%m/%d %H:%M:%S"
 
 
 def print_colored(text, *, color=None, **kwargs):
-    use_color = sys.stdout.isatty()
+    use_color    = sys.stdout.isatty()
     if use_color and color is not None:
         print(color + text + RESET, **kwargs)
     else:
