@@ -1,4 +1,6 @@
+activate_python.sh
 pybg_logs
+
 # Bytecode cache files
 __pycache__/
 *.py[cod]
