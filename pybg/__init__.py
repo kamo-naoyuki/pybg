@@ -1,11 +1,10 @@
 import argparse
 import datetime
-import enum
+import getpass
 import hashlib
 import logging
 import multiprocessing
 import os
-import select
 import shlex
 import shutil
 import signal
@@ -15,12 +14,11 @@ import sys
 import threading
 import time
 import traceback
-import uuid
-from collections import Counter, defaultdict
-from functools import partial
+from collections import Counter
+from functools import partial, wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 __version__ = "0.1.0"
 
@@ -35,7 +33,8 @@ st_handler = logging.StreamHandler()
 st_handler.setFormatter(logging.Formatter(FORMAT))
 logger.addHandler(st_handler)
 
-dfmt = "%Y/%m/%d %H:%M:%S"
+DFMT = "%Y/%m/%d %H:%M:%S"
+JOBID_LEN = 9
 
 
 def ordinal(n: int) -> str:
@@ -50,12 +49,12 @@ def ordinal(n: int) -> str:
     return f"{n}{suffix}"
 
 
-def print_colored(text, *, color=None, **kwargs):
+def print_colored(text, *, color=None, **kwargs) -> None:
     use_color = sys.stdout.isatty()
     if use_color and color is not None:
-        print(color + text + RESET, **kwargs)
+        print(color + text + RESET, **kwargs, flush=True)
     else:
-        print(text, **kwargs)
+        print(text, **kwargs, flush=True)
 
 
 class LockPrint:
@@ -67,7 +66,7 @@ class LockPrint:
             print_colored(*args, **kwargs)
 
 
-def read_file_reverse(filename, max_lines):
+def read_file_reverse(filename: Union[str, Path], max_lines: int):
     lines = []
     with open(filename, "rb") as f:
         f.seek(0, 2)
@@ -104,18 +103,44 @@ class PROTO:
     END = b"\5"
 
 
+def with_coverage():
+    import coverage
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            cov = None
+            if "COV_CORE_SOURCE" in os.environ:
+                data_file = os.environ["COV_CORE_DATAFILE"]
+                cov = coverage.Coverage(data_file=data_file, branch=True)
+                cov.start()
+
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                if cov:
+                    cov.stop()
+                    cov.save()
+
+            return result
+
+        return wrapper
+
+    return decorator
+
+
 class CommandPoolServer:
     @classmethod
-    def get_socket(cls):
+    def get_socket(cls) -> socket.socket:
         if os.name == "posix":
             return socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         else:
             return socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     @classmethod
-    def get_socket_file(cls, group_id):
+    def get_socket_file(cls, group_id: str) -> str:
         if os.name == "posix":
-            return f"/tmp/pybg-{os.getuid()}/{group_id}.socket"
+            return f"/tmp/pybg-{getpass.getuser()}/{group_id}.socket"
         else:
             raise RuntimeError("Only UNIX is supported")
             if isinstance(group_id, int):
@@ -123,10 +148,10 @@ class CommandPoolServer:
             return ("127.0.0.1", group_id)
 
     @classmethod
-    def get_log_file(cls, group_id):
-        return f"/tmp/pybg-{os.getuid()}/{group_id}.log"
+    def get_log_file(cls, group_id: str) -> str:
+        return f"/tmp/pybg-{getpass.getuser()}/{group_id}.log"
 
-    def __init__(self, group_id, timeout=60 * 5):
+    def __init__(self, group_id, timeout=60.0 * 5):
         self.group_id = group_id
         self.socket_file = CommandPoolServer.get_socket_file(group_id)
         Path(self.socket_file).parent.mkdir(parents=True, exist_ok=True)
@@ -137,18 +162,18 @@ class CommandPoolServer:
         self.log_file = CommandPoolServer.get_log_file(group_id)
         self.commands = []
 
-    def daemonize(self):
+    def daemonize(self) -> None:
         if os.fork() > 0:
             sys.exit()
         os.setsid()
         if os.fork() > 0:
             sys.exit()
-        sys.stdin = open("/dev/null", "r")
+        sys.stdin = open("/dev/null")
         Path(self.log_file).parent.mkdir(parents=True, exist_ok=True)
         sys.stdout = open(self.log_file, "a+")
         sys.stderr = open(self.log_file, "a+")
 
-    def is_port_in_use(self):
+    def is_port_in_use(self) -> bool:
         with CommandPoolServer.get_socket() as s:
             return s.connect_ex(self.socket_file) == 0
 
@@ -161,7 +186,7 @@ class CommandPoolServer:
                     logger.warning(f"Timeout: {self.timeout}s")
                     os._exit(0)
 
-    def safe_recv(self, socket, chunk=1024):
+    def safe_recv(self, socket: socket.socket, chunk: int = 1024) -> bytes:
         received = b""
         while True:
             try:
@@ -177,8 +202,8 @@ class CommandPoolServer:
                 logger.error(f"{e}")
                 data = None
                 received = None
-            except MemoryError as e:
-                logger.error(f"Memory error has happened! Stopping server...")
+            except MemoryError:
+                logger.error("Memory error has happened! Stopping server...")
                 self.running = False
                 data = None
                 received = None
@@ -186,7 +211,7 @@ class CommandPoolServer:
                 break
         return received
 
-    def safe_sendall(self, socket, data):
+    def safe_sendall(self, socket: socket.socket, data: bytes) -> bool:
         try:
             socket.sendall(data)
             with self.lock:
@@ -198,9 +223,13 @@ class CommandPoolServer:
             logger.error(f"Error sending {data}: {e}")
         return False
 
-    def start(self):
+    def start(self) -> None:
         self.daemonize()
+        self._start()
 
+    # To measure coverage with daemon process
+    @with_coverage()
+    def _start(self):
         logger.removeHandler(st_handler)
         st_handler.close()
         new_file_handler = RotatingFileHandler(
@@ -228,7 +257,6 @@ class CommandPoolServer:
                 logger.info(f"Connection has been accepted: {addr}")
                 data = self.safe_recv(client_socket)
                 if data is not None:
-
                     if data.startswith(PROTO.CLEAR):
                         logger.info("RECV: CLEAR")
                         self.safe_sendall(client_socket, PROTO.ACK + PROTO.END)
@@ -256,7 +284,7 @@ class CommandPoolServer:
                                 logger.error("ACK packet is expected: {ack_data}")
 
                         with self.lock:
-                            logger.error(f"Successfully finished writing. Stopping server...")
+                            logger.error("Successfully finished writing. Stopping server...")
                             self.running = False
 
                     elif data:
@@ -265,7 +293,7 @@ class CommandPoolServer:
                         pass
 
 
-def check_server_running(group_id: str, timeout=10):
+def check_server_running(group_id: str, timeout: float = 10) -> None:
     socket_file = CommandPoolServer.get_socket_file(group_id)
     # Wait until the server has started
     start_time = time.time()
@@ -276,26 +304,28 @@ def check_server_running(group_id: str, timeout=10):
             time.sleep(0.01)
 
 
-def server_start(group_id: str, timeout=10):
+def server_start(group_id: str, server_idle_timeout: float = 60 * 5, check_server_timeout: float = 10) -> None:
     socket_file = CommandPoolServer.get_socket_file(group_id)
     with CommandPoolServer.get_socket() as client:
         if client.connect_ex(socket_file) != 0:
-            if os.name == "posix" and Path(socket_file).exists():
+            if os.name == "posix":
                 try:
                     Path(socket_file).unlink()
                 except FileNotFoundError:
                     pass
 
-            server = CommandPoolServer(group_id=group_id)
+            server = CommandPoolServer(group_id=group_id, timeout=server_idle_timeout)
             process = multiprocessing.Process(target=server.start, daemon=True)
             process.start()
 
-    check_server_running(group_id, timeout=timeout)
+    check_server_running(group_id, timeout=check_server_timeout)
 
 
-def dump(group_id: str, basedir: str, timeout=1, allow_same=False):
-    check_server_running(group_id, timeout=timeout)
+def dump(group_id: str, basedir: str = None, check_server_timeout: float = 1, allow_same: bool = False):
+    check_server_running(group_id, timeout=check_server_timeout)
 
+    if basedir is None:
+        basedir = os.environ.get("PYBG_BASEDIR", "pybg_logs")
     basedir = Path(basedir)
     groupdir = basedir / group_id
     groupdir.mkdir(parents=True, exist_ok=True)
@@ -312,7 +342,7 @@ def dump(group_id: str, basedir: str, timeout=1, allow_same=False):
         while True:
             data = client.recv(1024)
             if not data:
-                raise RuntimeError(f"Server is shutdown")
+                raise RuntimeError("Server is shutdown")
 
             binary_command_list = []
             data_list = data.split(b"\n")
@@ -326,10 +356,10 @@ def dump(group_id: str, basedir: str, timeout=1, allow_same=False):
 
             received += data_list[-1]
 
-            for idx, command in enumerate(binary_command_list):
+            for command in binary_command_list:
                 decoded_command = command.decode()
                 if "#SBATCH" in decoded_command:
-                    valid_command, slurm_options = decoded_command.split("#SBATCH", maxsplit=1)
+                    valid_command, sbatch_options = decoded_command.split("#SBATCH", maxsplit=1)
                 else:
                     valid_command = decoded_command
                 valid_command = valid_command.strip()
@@ -354,7 +384,8 @@ def dump(group_id: str, basedir: str, timeout=1, allow_same=False):
                 # Break while loop
                 print_colored(
                     log_format(
-                        message=f"Dump {count} commands in {groupdir / 'commands'}",
+                        message=f"Received {count} commands from the server"
+                        f"({socket_file}) and dumped in {(groupdir / 'commands').absolute()}",
                         group_id=group_id,
                     )
                 )
@@ -368,7 +399,7 @@ def log_format(
     jobid=None,
     status=None,
 ) -> str:
-    retval = f"[ {datetime.datetime.now():{dfmt}}"
+    retval = f"[ {datetime.datetime.now():{DFMT}}"
     if group_id and jobid is not None:
         retval += f" | {group_id} {jobid}"
     elif group_id is not None:
@@ -378,6 +409,49 @@ def log_format(
 
     retval += f" ] {message}"
     return retval
+
+
+def get_jobid(command):
+    jobid = hashlib.sha256(command.encode()).hexdigest()
+    # Using the first 8 chars for usabilily
+    jobid = jobid[:JOBID_LEN]
+    return jobid
+
+
+def yield_command_list(groupdir: Path, slurm_check: bool = False):
+    if (groupdir / "commands").exists():
+        with (groupdir / "commands").open("r") as f:
+            command_list = [line.strip() for line in f]
+    else:
+        raise RuntimeError(f"{str(groupdir / 'commands')} is not existing")
+
+    counter = Counter()
+    for command in command_list:
+        if "#SBATCH" in command:
+            if slurm_check:
+                for scommand in ["sbatch", "squeue", "scancel"]:
+                    if shutil.which(scommand) is None:
+                        raise RuntimeError(f"Slurm is not setup? command not found: {scommand}")
+            valid_command, sbatch_options = command.split("#SBATCH", maxsplit=1)
+            sbatch_options = sbatch_options.strip()
+        else:
+            valid_command = command
+            sbatch_options = None
+        valid_command = valid_command.strip()
+        counter[valid_command] += 1
+
+        jobid = get_jobid(valid_command + "" if counter[valid_command] == 1 else str(counter[valid_command]))
+        jobdir = groupdir / jobid
+        status_text = jobdir / "status"
+        if status_text.exists():
+            try:
+                status = int(status_text.read_text())
+            except ValueError:
+                status = None
+        else:
+            status = None
+
+        yield status, command, valid_command, jobid, sbatch_options
 
 
 class Runner:
@@ -416,24 +490,22 @@ class Runner:
         group_id: str,
         failed_jobs,
         processes,
-        success_fail_counter,
-        event,
-        waittime=0.02,
-        squeue_minimum_interval=2,
+        success_fail_counter: list[int],
+        event: threading.Event,
+        waittime: float = 0.02,
+        squeue_minimum_interval: float = 2.0,
         retry: int = 0,
     ):
-
         last_squeue_time = None
         while True:
             with self.lock:
                 _processes = processes.copy()
-            finished = set()
             for jobid, (
                 process,
                 command,
                 valid_command,
                 jobdir,
-                slurm_options,
+                sbatch_options,
                 slurm_jobid,
                 submit_counter,
             ) in _processes.items():
@@ -452,13 +524,12 @@ class Runner:
                     if (jobdir / "status").exists():
                         try:
                             returncode = int((jobdir / "status").read_text().strip())
-                        except:
+                        except Exception:
                             returncode = 1
                     else:
                         # If active_text is existing, check the time interval instead of squeue command
                         # to reduce the load of slurm server
                         if (jobdir / "active").exists():
-
                             time_from_last_update = time.time() - (jobdir / "active").stat().st_mtime
                             # Double check using squeue command
                             if time_from_last_update > 2.5 and not self.squeue(slurm_jobid):
@@ -473,12 +544,13 @@ class Runner:
                                 else:
                                     try:
                                         returncode = int((jobdir / "status").read_text().strip())
-                                    except:
+                                    except Exception:
                                         returncode = 1
 
                         # if active_text is not existing, the job has not yet started
                         else:
-                            # To reduce the load of slurm server, avoid excecuting squeue command within squeue_minimum_interval
+                            # To reduce the load of slurm server,
+                            # avoid excecuting squeue command within squeue_minimum_interval
                             if last_squeue_time is None or time.time() - last_squeue_time > squeue_minimum_interval:
                                 last_squeue_time = time.time()
 
@@ -494,7 +566,7 @@ class Runner:
                                     else:
                                         try:
                                             returncode = int((jobdir / "status").read_text().strip())
-                                        except:
+                                        except Exception:
                                             returncode = 1
 
                 if returncode is not None:
@@ -516,7 +588,7 @@ class Runner:
                                 command,
                                 valid_command,
                                 jobdir,
-                                slurm_options,
+                                sbatch_options,
                                 processes,
                                 success_fail_counter,
                                 submit_counter + 1,
@@ -534,7 +606,7 @@ class Runner:
                                 message=command,
                                 group_id=group_id,
                                 jobid=jobid,
-                                status=f"Success",
+                                status="Success",
                             ),
                             color=GREEN,
                         )
@@ -550,16 +622,30 @@ class Runner:
                 break
 
     def submit(
-        self, group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, submit_counter
+        self,
+        group_id: str,
+        command: str,
+        valid_command: str,
+        jobdir: str,
+        sbatch_options: str,
+        processes,
+        success_fail_counter: list[int],
+        submit_counter: int,
     ):
         logfile = Path(jobdir) / "output"
         jobid = Path(jobdir).name
 
-        if slurm_options is None:
+        if sbatch_options is None:
             flogfile = logfile.open("w")
+            pid_text = jobdir / "pid"
+            try:
+                pid_text.unlink()
+            except FileNotFoundError:
+                pass
+
             try:
                 process = subprocess.Popen(shlex.split(valid_command), stdout=flogfile, stderr=flogfile)
-            except FileNotFoundError as e:
+            except FileNotFoundError:
                 flogfile.write(traceback.format_exc() + "\n")
                 self.lock_print(
                     log_format(
@@ -573,6 +659,7 @@ class Runner:
                 with self.count_lock:
                     success_fail_counter[1] += 1
             else:
+                pid_text.write_text(f"{process.pid}\n")
                 slurm_jobid = None
                 self.subprocesses.append((process, slurm_jobid))
 
@@ -595,14 +682,17 @@ class Runner:
                         command,
                         valid_command,
                         jobdir,
-                        slurm_options,
+                        sbatch_options,
                         slurm_jobid,
                         submit_counter,
                     )
 
         else:
             # Using sbatch (Slurm batch script)
-            sbatch_command = ["sbatch", "-o", logfile] + shlex.split(slurm_options)
+            slurm_job_name = f"pybg show {group_id} {jobid}"
+            sbatch_command = ["sbatch", f"--output={logfile}", f"--job-name={slurm_job_name}"] + shlex.split(
+                sbatch_options
+            )
             process = subprocess.Popen(
                 sbatch_command,
                 stdin=subprocess.PIPE,
@@ -611,12 +701,12 @@ class Runner:
             )
             active_text = jobdir / "active"
             status_text = jobdir / "status"
-            for p in [active_text, status_text]:
-                if p.exists():
-                    try:
-                        p.unlink()
-                    except FileNotFoundError:
-                        pass
+            slurm_jobid_text = jobdir / "slurm_jobid"
+            for p in [active_text, status_text, slurm_jobid_text]:
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    pass
             batch_script = f"""\
 #!/usr/bin/env sh
 update_timestamp() {{
@@ -632,10 +722,12 @@ write_status() {{
     exit $?
 }}
 # For logging
+echo "##############################################################"
 echo "# $(date)"
 echo "# $(hostname)"
 echo "# $(pwd)"
-echo '# {slurm_options}'
+echo '# {sbatch_options}'
+echo "##############################################################"
 
 rm -f '{status_text}'
 # Force sync
@@ -698,6 +790,7 @@ trap write_status EXIT
                     with self.count_lock:
                         success_fail_counter[1] += 1
                 else:
+                    slurm_jobid_text.write_text(f"{slurm_jobid}\n")
                     self.subprocesses.append((None, slurm_jobid))
                     jobid = Path(jobdir).name
                     with self.lock:
@@ -706,7 +799,7 @@ trap write_status EXIT
                             command,
                             valid_command,
                             jobdir,
-                            slurm_options,
+                            sbatch_options,
                             slurm_jobid,
                             submit_counter,
                         )
@@ -727,22 +820,26 @@ trap write_status EXIT
 
     def run_process(
         self,
-        group_id,
+        group_id: str,
         processes,
         jobs,
-        success_fail_counter,
-        event,
-        log_interval=300,
-        num_parallel=10,
-        launch_interval=0.05,
+        success_fail_counter: list[int],
+        event: threading.Event,
+        log_interval: float = 300.0,
+        num_parallel: int = 10,
+        launch_interval: float = 0.05,
     ):
         st = time.time()
         while True:
-            if len(jobs) > 0 and len(processes) <= num_parallel:
-                command, valid_command, jobdir, slurm_options = jobs.pop()
-                self.submit(group_id, command, valid_command, jobdir, slurm_options, processes, success_fail_counter, 1)
+            with self.lock:
+                running = len(processes)
+            if len(jobs) > 0 and running <= num_parallel:
+                command, valid_command, jobdir, sbatch_options = jobs.pop()
+                self.submit(
+                    group_id, command, valid_command, jobdir, sbatch_options, processes, success_fail_counter, 1
+                )
 
-            # All jobs has been finished
+            # All jobs have been finished
             if len(jobs) == 0 and len(processes) == 0:
                 event.set()
                 break
@@ -767,8 +864,8 @@ trap write_status EXIT
     def run(
         self,
         group_id,
-        basedir="pybg_logs",
-        rerun=False,
+        jobids=list[str],
+        basedir: Optional[str] = None,
         num_parallel=10,
         launch_interval=0.1,
         waittime=0.02,
@@ -776,91 +873,86 @@ trap write_status EXIT
         retry: int = 0,
     ):
 
+        if basedir is None:
+            basedir = os.environ.get("PYBG_BASEDIR", "pybg_logs")
         basedir = Path(basedir)
         groupdir = basedir / group_id
-
-        if (groupdir / "commands").exists():
-            with (groupdir / "commands").open("r") as f:
-                command_list = [line.strip() for line in f]
-        else:
-            raise RuntimeError(f'{str(groupdir / "commands")} is not existing')
 
         self.lock_print = LockPrint()
         self.lock_print(
             log_format(
-                message=f"basedir={basedir}, rerun={rerun}, num_parallel={num_parallel}",
+                message=f"basedir={basedir}, retry={retry}, num_parallel={num_parallel}",
                 group_id=group_id,
                 status="Start",
             ),
         )
+        specified_jobids = [jobid for jobid in jobids if len(jobid) == JOBID_LEN]
 
         jobs = []
-        counter = Counter()
-        for command in command_list:
-            if "#SBATCH" in command:
-                for scommand in ["sbatch", "squeue", "scancel"]:
-                    if shutil.which(scommand) is None:
-                        raise RuntimeError(f"Slurm is not setup? command not found: {scommand}")
-                valid_command, slurm_options = command.split("#SBATCH", maxsplit=1)
-                slurm_options = slurm_options.strip()
-            else:
-                valid_command = command
-                slurm_options = None
-            valid_command = valid_command.strip()
-            counter[valid_command] += 1
-
-            jobid = hashlib.sha256(
-                (valid_command + "" if counter[valid_command] == 1 else str(counter[valid_command])).encode()
-            ).hexdigest()
-            # Using the first 8 chars for usabilily
-            jobid = jobid[:8]
+        num_skipped = 0
+        for status, command, valid_command, jobid, sbatch_options in yield_command_list(groupdir, slurm_check=True):
             jobdir = groupdir / jobid
             jobdir.mkdir(parents=True, exist_ok=True)
             command_text = jobdir / "command"
             command_text.write_text(valid_command + "\n")
-            status_text = jobdir / "status"
-            slurm_options_text = jobdir / "slurm_options"
-            if slurm_options is not None:
-                slurm_options_text.write_text(slurm_options)
-            elif slurm_options_text.exists():
+            jobdir / "status"
+            sbatch_options_text = jobdir / "sbatch_options"
+            if sbatch_options is not None:
+                sbatch_options_text.write_text(sbatch_options)
+            else:
                 try:
-                    slurm_options_text.unlink()
+                    sbatch_options_text.unlink()
+                except FileNotFoundError:
+                    pass
+            for p in [jobdir / "pid", jobdir / "slurm_jobid"]:
+                try:
+                    p.unlink()
                 except FileNotFoundError:
                     pass
 
-            if status_text.exists():
-                try:
-                    status = int(status_text.read_text())
-                except ValueError:
-                    status = -1
-            else:
-                status = -1
+            if (
+                len(jobids) == 0
+                or any(
+                    (
+                        (_jobid in ["unfinish", "nonsuccess"] and status is None)
+                        or (_jobid in ["fail", "nonsuccess"] and status > 0)
+                        or (_jobid == "success" and status == 0)
+                    )
+                    for _jobid in jobids
+                )
+                or jobid in specified_jobids
+            ):
+                jobs.append((command, valid_command, jobdir, sbatch_options))
 
-            if rerun or status != 0:
-                jobs.append((command, valid_command, jobdir, slurm_options))
+                if jobid in specified_jobids:
+                    specified_jobids.remove(jobid)
             else:
-                self.lock_print(log_format(message=valid_command, group_id=group_id, jobid=jobid, status="Skip"))
-        del counter
-        already_finished = len(command_list) - len(jobs)
+                num_skipped += 1
+
+        self.lock_print(log_format(message=f"{num_skipped} jobs have been skipped", group_id=group_id))
+        for jobid in specified_jobids:
+            self.lock_print(
+                log_format(message=f"Warning: Jobid '{jobid}' is not existing", group_id=group_id), color=RED
+            )
 
         self.lock = threading.Lock()
         self.count_lock = threading.Lock()
         success_fail_counter = [0, 0]
         event = threading.Event()
-        processes = dict()
+        processes = {}
         failed_jobs = set()
 
         thread = threading.Thread(
             target=self.write_status,
-            kwargs=dict(
-                group_id=group_id,
-                processes=processes,
-                failed_jobs=failed_jobs,
-                success_fail_counter=success_fail_counter,
-                event=event,
-                waittime=waittime,
-                retry=retry,
-            ),
+            kwargs={
+                "group_id": group_id,
+                "processes": processes,
+                "failed_jobs": failed_jobs,
+                "success_fail_counter": success_fail_counter,
+                "event": event,
+                "waittime": waittime,
+                "retry": retry,
+            },
             daemon=True,
         )
 
@@ -880,7 +972,7 @@ trap write_status EXIT
         succeeded, failed = success_fail_counter
         self.lock_print(
             log_format(
-                message=f"success/fail/skip = {succeeded}/{failed}/{already_finished}",
+                message=f"success/fail/skip = {succeeded}/{failed}/{num_skipped}",
                 group_id=group_id,
                 status="End",
             ),
@@ -888,17 +980,20 @@ trap write_status EXIT
         )
 
         if failed != 0:
-            self.lock_print("Failed jobids:", color=RED)
-            failed_message = " ".join(failed_jobs)
-            self.lock_print(failed_message, color=RED)
+            self.lock_print(
+                f"To submit only failed jobs: pybg run --basedir {Path(basedir).absolute()} {group_id} nonsuccess",
+                color=RED,
+            )
+            self.lock_print(f"Failed jobids: {' '.join(failed_jobs)}", color=RED)
+            sys.exit(1)
 
 
-def start_handler(args):
-    start_and_start(group_id=args.group_id)
+def start_handler(args: argparse.Namespace):
+    start_and_start(group_id=args.group_id, server_idle_timeout=args.server_idle_timeout)
 
 
-def start_and_start(group_id):
-    server_start(group_id)
+def start_and_start(group_id: str, server_idle_timeout: float = 60.0 * 5, check_server_timeout: float = 2.0):
+    server_start(group_id, server_idle_timeout=server_idle_timeout, check_server_timeout=check_server_timeout)
 
     socket_file = CommandPoolServer.get_socket_file(group_id)
     with CommandPoolServer.get_socket() as client:
@@ -913,17 +1008,18 @@ def start_and_start(group_id):
                     status="Error",
                 ),
             )
+            sys.exit(1)
 
 
-def add_handler(args):
+def add_handler(args: argparse.Namespace):
     command = shlex.join(args.command)
-    if args.slurm_options is not None:
-        command += f" #SBATCH {args.slurm_options}"
+    if args.sbatch_options is not None:
+        command += f" #SBATCH {args.sbatch_options}"
     add(group_id=args.group_id, command=command)
 
 
-def add(group_id, command, timeout=2):
-    check_server_running(group_id, timeout=timeout)
+def add(group_id: str, command: str, check_server_timeout: float = 2.0):
+    check_server_running(group_id, timeout=check_server_timeout)
 
     socket_file = CommandPoolServer.get_socket_file(group_id)
     with CommandPoolServer.get_socket() as client:
@@ -938,22 +1034,68 @@ def add(group_id, command, timeout=2):
                     status="Error",
                 ),
             )
+            sys.exit(1)
 
 
-def dump_handler(args):
+def dump_handler(args: argparse.Namespace):
     dump(group_id=args.group_id, basedir=args.basedir, allow_same=args.allow_same)
 
 
-def stop_processes(processes, timeout=15):
-    for p, slurm_jobid in processes:
+def run_handler(args: argparse.Namespace):
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGQUIT, signal_handler)
+    signal.signal(signal.SIGHUP, signal_handler)
+    runner = Runner()
+    try:
+        runner.run(
+            group_id=args.group_id,
+            basedir=args.basedir,
+            jobids=args.jobids,
+            num_parallel=args.num_parallel,
+            launch_interval=args.launch_interval,
+            waittime=args.waittime,
+            log_interval=args.log_interval,
+            retry=args.retry,
+        )
+    except (SystemExit, KeyboardInterrupt) as e:
+        # Ignore stopping signal
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+        stop_slurm_jobs(runner.subprocesses)
+        if isinstance(e, KeyboardInterrupt):
+            # Basically, we don't need to send KeyboardInterrupt for subprocesses.
+            # This is done for srun command.
+            stop_subprocesses(runner.subprocesses)
+
+        # Restore stopping signal
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        signal.signal(signal.SIGQUIT, signal.SIG_DFL)
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        raise e
+
+
+def signal_handler(signum, frame) -> None:
+    print(f"Signal {signum} received...", flush=True)
+    sys.exit(128 + signum)
+
+
+def stop_subprocesses(processes, timeout=15):
+    first = True
+    for p, _ in processes:
         if p is not None:
+            if first:
+                print("Sending KeyboardInterrupt...", flush=True)
+                first = False
+
             # NOTE: send_signal is non-blocking
             # NOTE: Do nothing if the process completed.
             p.send_signal(signal.SIGINT)
-        else:
-            subprocess.run(["scancel", f"{slurm_jobid}"])
 
-    for p, slurm_jobid in processes:
+    for p, _ in processes:
         if p is not None:
             try:
                 p.wait(timeout)
@@ -966,76 +1108,58 @@ def stop_processes(processes, timeout=15):
     # No wait for killing
 
 
-def run_handler(args):
-    runner = Runner()
-    try:
-        runner.run(
-            group_id=args.group_id,
-            basedir=args.basedir,
-            rerun=args.rerun,
-            num_parallel=args.num_parallel,
-            launch_interval=args.launch_interval,
-            waittime=args.waittime,
-            log_interval=args.log_interval,
-            retry=args.retry,
-        )
-    except KeyboardInterrupt:
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        stop_processes(runner.subprocesses)
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-        raise
+def stop_slurm_jobs(processes, timeout=15):
+    first = True
+    for _, slurm_jobid in processes:
+        if slurm_jobid is not None:
+            if first:
+                print("Cancelling Slurm jobs...", flush=True)
+                first = False
+            subprocess.run(["scancel", f"{slurm_jobid}"])
 
 
-def show_handler(args):
+def show_handler(args: argparse.Namespace):
     basedir = args.basedir
     group_id = args.group_id
     jobid = args.jobid
-    query = args.query
-    if jobid is None:
-        jobid_list = []
-        for command_file in (Path(basedir) / group_id).glob("*/command"):
-            _jobid = command_file.parent.name
-            jobid_list.append(_jobid)
-        print(" ".join(jobid_list))
+    filename = args.filename
+    nofilepath = args.nofilepath
+    groupdir = Path(basedir) / group_id
+    if jobid is None or jobid in ["nonsuccess", "unfinish", "fail", "success"]:
+        if filename is not None:
+            print("Warning: filename has been ignored: {filename}")
+
+        print(
+            " ".join(
+                _jobid
+                for status, command, valid_command, _jobid, sbatch_options in yield_command_list(groupdir)
+                if jobid is None
+                or (jobid in ["unfinish", "nonsuccess"] and status is None)
+                or (jobid in ["fail", "nonsuccess"] and status is not None and status != 0)
+                or (jobid == "success" and status == 0)
+            )
+        )
         return
 
-    if jobid in ["unfinished", "fail", "success"]:
-        if query is not None:
-            print("Warning: query is ignored: {query}")
-
-        jobid_list = []
-        for command_file in (Path(basedir) / group_id).glob("*/command"):
-            _jobid = command_file.parent.name
-            status_file = command_file.parent / "status"
-            if status_file.exists():
-                status = int(status_file.read_text().strip())
-                if jobid == "fail" and status != 0:
-                    jobid_list.append(_jobid)
-                elif jobid == "success" and status == 0:
-                    jobid_list.append(_jobid)
-            else:
-                jobid_list.append(_jobid)
-        print(" ".join(jobid_list))
-        return
-
-    if query is None:
-        query = "output"
+    if filename is None:
+        filename = "output"
 
     jobdir = Path(basedir) / group_id / jobid
-    if (jobdir / query).exists():
-        print((jobdir / query).read_text())
-        print(f"( {jobdir / query} )")
+    if (jobdir / filename).exists():
+        print((jobdir / filename).read_text(), end="")
+        if not nofilepath:
+            print(f"( {jobdir / filename} )")
         return
     else:
-        print(f"{jobdir / query} doesn't exist")
+        print(f"{jobdir / filename} is not existing")
         return
 
 
-def show_server_log_handler(args):
+def show_server_log_handler(args: argparse.Namespace):
     logfile = Path(CommandPoolServer.get_log_file(args.group_id))
     if logfile.exists():
         read_file_reverse(logfile, args.line)
-        print(f"({logfile})")
+        print(f"( {logfile} )")
     else:
         print(f"(Logfile is not existing: {logfile})")
 
@@ -1044,44 +1168,62 @@ def tpl_handler(args, parser_start, parser_add, parser_dump, parser_run):
     print(
         f"""#!/usr/bin/env bash
 group_id='{"group_id" if args.group_id is None else args.group_id}'
-basedir='{parser_dump.get_default("basedir")}'
+# export PYBG_BASEDIR='pybg_logs'
 
-pybg clean "${{group_id}}"
+pybg start "${{group_id}}"
 
 pybg add "${{group_id}}" [write command]
 
-pybg dump --basedir "${{basedir}}" "${{group_id}}"
-pybg run --basedir "${{basedir}}" --rerun '{parser_run.get_default("rerun")}' --num-parallel '{parser_run.get_default("num_parallel")}' --log-interval '{parser_run.get_default("log_interval")}' "${{group_id}}"\
+pybg dump "${{group_id}}"
+pybg run --retry '{parser_run.get_default("retry")}' \
+--num-parallel '{parser_run.get_default("num_parallel")}' \
+--log-interval '{parser_run.get_default("log_interval")}' \
+"${{group_id}}"\
 """
     )
 
 
-def str2bool(arg):
-    if arg.lower() in ["true", "1"]:
-        return True
-    elif arg.lower() in ["false", "0"]:
-        return False
-    raise TypeError(f"true or false are expected, but got {arg}")
+def jobid_str(arg) -> str:
+    order_types = ["nonsuccess", "unfinish", "fail", "success"]
+    if len(arg) == JOBID_LEN:
+        return arg
+    for order_type in order_types:
+        if order_type.startswith(arg):
+            return order_type
+    else:
+        raise TypeError("Must be {JOBID_LEN} length string or one of {', '.join(order_types)}: {arg}")
 
 
-def str_or_none(arg):
+def str_or_none(arg) -> Optional[str]:
     if arg.lower() in ["none", "null"]:
         return None
     else:
         return arg
 
 
-def main():
+def str2bool(arg) -> bool:
+    if arg.lower() in ["true", "1"]:
+        return True
+    elif arg.lower() in ["false", "0"]:
+        return False
+
+
+def main(args: Optional[list[str]] = None):
+    for order_type in ["nonsuccess", "unfinish", "fail", "success"]:
+        if len(order_type) == JOBID_LEN:
+            raise RuntimeError(f"Please set different number: JOBID_LEN={JOBID_LEN}")
+
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     subparsers = parser.add_subparsers()
 
     parser_start = subparsers.add_parser("start")
     parser_start.add_argument("group_id")
+    parser_start.add_argument("--server-idle-timeout", type=float, default=60.0 * 5)
     parser_start.set_defaults(handler=start_handler)
 
     parser_add = subparsers.add_parser("add")
     parser_add.add_argument(
-        "--slurm-options", "-s", type=str_or_none, help="When this option is used, jobs can be submitted using sbatch"
+        "--sbatch-options", "-s", type=str_or_none, help="When this option is used, jobs can be submitted using sbatch"
     )
     parser_add.add_argument("group_id")
     parser_add.add_argument("command", nargs=argparse.REMAINDER)
@@ -1089,7 +1231,7 @@ def main():
 
     parser_dump = subparsers.add_parser("dump")
     parser_dump.add_argument("group_id")
-    parser_dump.add_argument("--basedir", default="pybg_logs")
+    parser_dump.add_argument("--basedir", default=None)
     parser_dump.add_argument(
         "--allow-same", "-a", action="store_true", help="Specifies whether to register the same command"
     )
@@ -1097,10 +1239,8 @@ def main():
 
     parser_run = subparsers.add_parser("run")
     parser_run.add_argument("group_id")
-    parser_run.add_argument("--basedir", default="pybg_logs")
-    parser_run.add_argument(
-        "--rerun", "-r", type=str2bool, default=False, help="Specifies whether to retry previously failed jobs"
-    )
+    parser_run.add_argument("jobids", type=jobid_str, nargs="*", help="jobids or nonsuccess/fail/success/unfinish")
+    parser_run.add_argument("--basedir", default=None)
     parser_run.add_argument(
         "--num-parallel", "-n", default=50, type=int, help="The maximum number of jobs executed in parallel at a time"
     )
@@ -1119,6 +1259,7 @@ def main():
     )
     parser_run.add_argument(
         "--retry",
+        default=0,
         type=int,
         help="Specifies the maximum number of times to resubmit a job when it fails."
         "If set to 0, the job will not be resubmitted.  "
@@ -1127,10 +1268,15 @@ def main():
     parser_run.set_defaults(handler=run_handler)
 
     parser_show = subparsers.add_parser("show", help="Shows the output or status of jobs")
+    parser_show.add_argument("--nofilepath", type=str2bool, default=False)
     parser_show.add_argument("--basedir", default="pybg_logs")
     parser_show.add_argument("group_id")
-    parser_show.add_argument("jobid", nargs="?")
-    parser_show.add_argument("query", nargs="?", choices=["output", "status", "command"])
+    parser_show.add_argument("jobid", type=jobid_str, nargs="?", help="jobids or nonsuccess/fail/success/unfinish")
+    parser_show.add_argument(
+        "filename",
+        nargs="?",
+        choices=["output", "status", "command", "batch_script", "pid", "sbatch_options", "slurm_jobid"],
+    )
     parser_show.set_defaults(handler=show_handler)
 
     parser_show_server_log = subparsers.add_parser("show-server-log", help="Shows the log of CommandPoolServer")
@@ -1156,7 +1302,7 @@ def main():
         )
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(args)
     if hasattr(args, "handler"):
         args.handler(args)
     else:
