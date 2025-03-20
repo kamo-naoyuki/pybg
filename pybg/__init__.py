@@ -18,7 +18,7 @@ from collections import Counter
 from functools import partial, wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 __version__ = "0.1.0"
 
@@ -71,7 +71,7 @@ def read_file_reverse(filename: Union[str, Path], max_lines: int):
     with open(filename, "rb") as f:
         f.seek(0, 2)
         position = f.tell()
-        buffer: list[bytes] = []
+        buffer: List[bytes] = []
         line_count = 0
 
         while position > 0 and line_count < max_lines:
@@ -492,7 +492,7 @@ class Runner:
         group_id: str,
         failed_jobs,
         processes,
-        success_fail_counter: list[int],
+        success_fail_counter: List[int],
         event: threading.Event,
         waittime: float = 0.02,
         squeue_minimum_interval: float = 2.0,
@@ -631,7 +631,7 @@ class Runner:
         jobdir: Union[str, Path],
         sbatch_options: str,
         processes,
-        success_fail_counter: list[int],
+        success_fail_counter: List[int],
         submit_counter: int,
     ):
         jobdir = Path(jobdir)
@@ -826,7 +826,7 @@ trap write_status EXIT
         group_id: str,
         processes,
         jobs,
-        success_fail_counter: list[int],
+        success_fail_counter: List[int],
         event: threading.Event,
         log_interval: float = 300.0,
         num_parallel: int = 10,
@@ -867,7 +867,7 @@ trap write_status EXIT
     def run(
         self,
         group_id,
-        jobids=list[str],
+        jobids=List[str],
         basedir: Optional[Union[str, Path]] = None,
         num_parallel=10,
         launch_interval=0.1,
@@ -875,7 +875,6 @@ trap write_status EXIT
         log_interval=30,
         retry: int = 0,
     ):
-
         if basedir is None:
             basedir = os.environ.get("PYBG_BASEDIR", "pybg_logs")
         basedir = Path(basedir)
@@ -1213,7 +1212,7 @@ def str2bool(arg) -> bool:
         raise TypeError(f"Must be true or false, but got {arg}")
 
 
-def main(sysargs: Optional[list[str]] = None):
+def main(sysargs: Optional[List[str]] = None):
     for order_type in ["nonsuccess", "unfinish", "fail", "success"]:
         if len(order_type) == JOBID_LEN:
             raise RuntimeError(f"Please set different number: JOBID_LEN={JOBID_LEN}")
