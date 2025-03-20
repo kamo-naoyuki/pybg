@@ -35,12 +35,17 @@ jobs:
     #     until docker exec slurm-container sinfo; do
     #       sleep 5
     #     done
+    - name: Start slurm services
+      run: |
+        /usr/local/bin/docker-entrypoint.sh slurmctld
+        /usr/local/bin/docker-entrypoint.sh slurmd
+        /usr/local/bin/docker-entrypoint.sh slurmdbd
     - name: Wait for Slurm to initialize
       run: |
-        /etc/init.d/munge start
-        /etc/init.d/slurmctld start
-        /etc/init.d/slurmd start
-        squeue
+        echo "Waiting for Slurm to be ready..."
+        until sinfo; do
+          sleep 5
+        done
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
       with:
