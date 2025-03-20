@@ -111,7 +111,7 @@ def test_server_is_not_runnnig_dump():
         main(["dump", gid])
 
 
-def sleep_jobs():
+def sleep_jobs(sbatch_options):
     gid = uuid.uuid4().hex
 
     sbatch_options = ""
@@ -123,11 +123,17 @@ def sleep_jobs():
 
 
 @pytest.mark.parametrize(
+    "sbatch_options",
+    [
+        pytest.param("", marks=pytest.mark.xfail(shutil.which("sbatch") is None, reason="Require slurm")),
+    ],
+)
+@pytest.mark.parametrize(
     "_signal",
     [signal.SIGHUP, signal.SIGTERM, signal.SIGINT, signal.SIGQUIT],
 )
-def test_kill(capsys, _signal):
-    process = Process(target=sleep_jobs)
+def test_kill(capsys, _signal, sbatch_options):
+    process = Process(target=sleep_jobs, kwargs={"sbatch_options": sbatch_options})
     process.start()
 
     time.sleep(2)
@@ -152,4 +158,4 @@ def test_server_idle_timeout(capsys):
 
 
 def test_help():
-    main()
+    main([])
