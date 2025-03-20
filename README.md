@@ -1,6 +1,7 @@
 # Pybg: Local job management tool
 [![Lint](https://github.com/kamo-naoyuki/pybg/actions/workflows/lint.yml/badge.svg)](https://github.com/kamo-naoyuki/pybg/actions/workflows/lint.yml)
 [![Pytest](https://github.com/kamo-naoyuki/pybg/actions/workflows/pytest.yml/badge.svg)](https://github.com/kamo-naoyuki/pybg/actions/workflows/pytest.yml)
+[![codecov](https://codecov.io/gh/kamo-naoyuki/pybg/graph/badge.svg?token=820U4qvFg1)](https://codecov.io/gh/kamo-naoyuki/pybg)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/kamo-naoyuki/pybg/main.svg)](https://results.pre-commit.ci/latest/github/kamo-naoyuki/pybg/main)
 [![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
