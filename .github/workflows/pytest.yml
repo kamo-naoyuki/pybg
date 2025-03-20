@@ -27,24 +27,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: koesterlab/setup-slurm-action@v1
-    # - name: Set up Docker Compose
-    #   run: |
-    #     docker compose version
-    # - name: Start Slurm Cluster
-    #   run: |
-    #     git clone https://github.com/giovtorres/slurm-docker-cluster.git
-    #     cd slurm-docker-cluster
-    #     docker compose build
-    #     docker compose up -d
-    # - name: Wait for Slurm to initialize
-    #   run: |
-    #     echo "Waiting for Slurm to be ready..."
-    #     until docker exec slurm-container sinfo; do
-    #       sleep 5
-    #     done
-    - name: Wait for Slurm to initialize
+    - name: Check Slurm to initialize
       run: |
-        echo "Waiting for Slurm to be ready..."
         sinfo
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4

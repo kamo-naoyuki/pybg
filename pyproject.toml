@@ -52,8 +52,8 @@ fixable = ["ALL"]
 [tool.mypy]
 python_version = "3.7"
 
-[tool.pytest.ini_optios]
-addopts = "--cov=pybg --cov-branch --cov-report=term --cov-report=xml"
+[tool.pytest.ini_options]
+addopts = "--cov=pybg --cov-branch --cov-report=xml"
 testpaths = ["tests"]
 
 
