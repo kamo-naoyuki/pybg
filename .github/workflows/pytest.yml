@@ -37,6 +37,9 @@ jobs:
     #     done
     - name: Wait for Slurm to initialize
       run: |
+        /etc/init.d/munge start
+        /etc/init.d/slurmctld start
+        /etc/init.d/slurmd start
         squeue
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
