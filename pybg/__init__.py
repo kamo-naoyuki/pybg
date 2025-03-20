@@ -37,6 +37,15 @@ DFMT = "%Y/%m/%d %H:%M:%S"
 JOBID_LEN = 9
 
 
+if sys.version_info <= (3, 7):
+
+    def shlexjoin(split_command):
+        """Return a shell-escaped string from *split_command*."""
+        return " ".join(shlex.quote(arg) for arg in split_command)
+
+    shlex.join = shlexjoin
+
+
 def ordinal(n: int) -> str:
     """
     Convert an integer to its ordinal representation (e.g., 1 -> '1st', 2 -> '2nd', 3 -> '3rd', 4 -> '4th').
