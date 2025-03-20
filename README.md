@@ -93,7 +93,7 @@ One of Pybg's most important features is its ability to manage job success and f
 If some jobs succeed while others fail, you can rerun only the failed jobs.
 
 ```sh
-pybg run group_id [nonsuccess|fail|unfinish|success]
+pybg run group_id <nonsuccess|fail|unfinish|success>
 ```
 
 - `fail` indicates jobs that exited with a non-zero status.
@@ -243,5 +243,4 @@ Correct:
 
 ```sh
 pybg add sh -c "echo AAA; exit 0"
-```
 ```
