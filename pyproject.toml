@@ -22,6 +22,9 @@ version = {attr = "pybg.__version__"}
 dev = [
     "pytest>=6.2",
     "pytest-cov",
+    "mypy",
+    "flake8",
+    "Flake8-pyproject",
 ]
 
 [tool.setuptools.package-dir]
@@ -57,3 +60,8 @@ testpaths = ["tests"]
 [tool.black]
 target-version = ['py38']
 line-length = 120
+
+
+[tool.flake8]
+max-line-length = 120
+ignore = ['E203', 'E501']
