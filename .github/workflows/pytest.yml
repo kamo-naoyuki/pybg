@@ -13,25 +13,31 @@ permissions: write-all
 jobs:
   slurm-pytest:
     runs-on: ubuntu-22.04
+    container:
+      image: scalableminds/slurm-docker-cluster:master
     strategy:
       matrix:
         python-version: [3.7, 3.8, 3.9, "3.10", 3.11, 3.12, 3.13]
     steps:
     - uses: actions/checkout@v4
-    - name: Set up Docker Compose
+    # - name: Set up Docker Compose
+    #   run: |
+    #     docker compose version
+    # - name: Start Slurm Cluster
+    #   run: |
+    #     git clone https://github.com/giovtorres/slurm-docker-cluster.git
+    #     cd slurm-docker-cluster
+    #     docker compose build
+    #     docker compose up -d
+    # - name: Wait for Slurm to initialize
+    #   run: |
+    #     echo "Waiting for Slurm to be ready..."
+    #     until docker exec slurm-container sinfo; do
+    #       sleep 5
+    #     done
+    - name: Wait for Slurm to initialize
       run: |
-        docker compose version
-    - name: Start Slurm Cluster
-      run: |
-        git clone https://github.com/giovtorres/slurm-docker-cluster.git
-        cd slurm-docker-cluster
-        docker compose build
-        docker compose up -d
-
-        echo "Waiting for Slurm to be ready..."
-        sleep 10
         squeue
-        docker compose exec slurmctld sinfo
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
       with:
