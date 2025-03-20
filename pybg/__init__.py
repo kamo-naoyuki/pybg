@@ -43,7 +43,8 @@ if sys.version_info <= (3, 7):
         """Return a shell-escaped string from *split_command*."""
         return " ".join(shlex.quote(arg) for arg in split_command)
 
-    shlex.join = shlexjoin
+else:
+    shlexjoin = shlex.join
 
 
 def ordinal(n: int) -> str:
@@ -760,7 +761,7 @@ trap write_status EXIT
             if process.returncode != 0:
                 self.lock_print(
                     log_format(
-                        message=f"{shlex.join(sbatch_command)}: {stderr.decode()}",
+                        message=f"{shlexjoin(sbatch_command)}: {stderr.decode()}",
                         group_id=group_id,
                         jobid=jobid,
                         status="Error",
@@ -1023,7 +1024,7 @@ def start_and_start(group_id: str, server_idle_timeout: float = 60.0 * 5, check_
 
 
 def add_handler(args: argparse.Namespace):
-    command = shlex.join(args.command)
+    command = shlexjoin(args.command)
     if args.sbatch_options is not None:
         command += f" #SBATCH {args.sbatch_options}"
     add(group_id=args.group_id, command=command)
