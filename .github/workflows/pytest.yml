@@ -1,4 +1,4 @@
-name: Run Pytest
+name: Pytest
 
 on:
   push:
@@ -10,30 +10,28 @@ on:
 
 jobs:
   slurm-pytest:
-    runs-on: ubuntu-latest
-    container:
-      image: slurm-docker-cluster
-      options: --privileged
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
         python-version: [3.7, 3.8, 3.9, "3.10", 3.11, 3.12, 3.13]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
+      uses: actions/setup-python@v4
       with:
         python-version: ${{ matrix.python-version }}
-    - name: Start Slurm Services
+    - name: Set up Docker Compose
       run: |
-        echo "Starting Slurm and Munge..."
-        /etc/init.d/munge start
-        /etc/init.d/slurmctld start
-        /etc/init.d/slurmd start
+        docker compose version
+    - name: Start Slurm Cluster
+      run: |
+        git clone https://github.com/giovtorres/slurm-docker-cluster.git
+        cd slurm-docker-cluster
+        docker compose up -d
 
-        echo "Checking Slurm status..."
-        until sinfo; do
-          sleep 5
-        done
+        echo "Waiting for Slurm to be ready..."
+        sleep 10
+        docker compose exec slurmctld sinfo
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
