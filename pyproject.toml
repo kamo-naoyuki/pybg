@@ -34,7 +34,7 @@ pybg = "pybg"
 pybg = "pybg:main"
 
 [tool.ruff]
-target-version = "py38"
+target-version = "py37"
 line-length = 120
 
 [tool.ruff.lint]
@@ -50,15 +50,15 @@ select = [
 fixable = ["ALL"]
 
 [tool.mypy]
-python_version = "3.8"
+python_version = "3.7"
 
-[tool.pytest.ini_options]
-addopts = "--cov=pybg --cov-branch --cov-report=term --cov-report=html"
+[tool.pytest.ini_optios]
+addopts = "--cov=pybg --cov-branch --cov-report=term --cov-report=xml"
 testpaths = ["tests"]
 
 
 [tool.black]
-target-version = ['py38']
+target-version = ['py37']
 line-length = 120
 
 

@@ -1,5 +1,8 @@
 # Pybg: Local job management tool
+[![Lint](https://github.com/kamo-naoyuki/pybg/actions/workflows/lint.yml/badge.svg)](https://github.com/kamo-naoyuki/pybg/actions/workflows/lint.yml)
+[![Pytest](https://github.com/kamo-naoyuki/pybg/actions/workflows/pytest.yml/badge.svg)](https://github.com/kamo-naoyuki/pybg/actions/workflows/pytest.yml)
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/kamo-naoyuki/pybg/main.svg)](https://results.pre-commit.ci/latest/github/kamo-naoyuki/pybg/main)
+[![Checked with mypy](https://www.mypy-lang.org/static/mypy_badge.svg)](https://mypy-lang.org/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
@@ -99,16 +102,16 @@ With Pybg, you can easily retry failed jobs without any extra effort.
 pybg run group_id [nonsuccess|fail|unfinish|success]
 ```
 
-`fail` indictes jobs which has exited with non-zero status, `unfinish` indicates jobs which have not yet started, `nonsuccess` indicates jobs corresponding to both `fail` and `unfinish`, and `success` indicates jobs which has exited  with zero status.
+`fail` indictes jobs which have exited with non-zero status, `unfinish` indicates jobs which have not yet started, `nonsuccess` indicates jobs corresponding to both `fail` and `unfinish`, and `success` indicates jobs which have exited  with zero status.
 
 You can omit characters after the first one.
 
 
 ```sh
-pybg run group_id n  # Equivalent to nonsuccess
+pybg run group_id n  # "n" is equivalent to "nonsuccess"
 ```
 
-You can also specify dirctly jobids to be executed
+You can also specify dirctly jobids to be executed.
 
 ```sh
 pybg run group_id jobid1 jobid2 ...
@@ -136,32 +139,32 @@ pybg run --retry -1 run group_id
 
 
 ```sh
-pybg show [group-id] [jobid]
+pybg show <group-id> <jobid>
 ```
 
 - Showing the exit-status of the job if the job has been finished
 
 
 ```sh
-pybg show [group-id] [jobid] status
+pybg show <group-id> <jobid> status
 ```
 
 - Showing the command of the job
 
 ```sh
-pybg show [group-id] [jobid] command
+pybg show <group-id> <jobid> command
 ```
 
 - Showing the jobids of the jobs-group
 
 ```sh
-pybg show [group-id]
+pybg show <group-id>
 ```
 
 - Showing the jobids of notsuccess|fail|success|unfinish jobs
 
 ```sh
-pybg show [group-id] [notsuccess|fail|success|unfinish]
+pybg show <group-id> <notsuccess|fail|success|unfinish>
 ```
 
 ## To change basedir
