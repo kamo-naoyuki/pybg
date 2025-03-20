@@ -7,16 +7,15 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
-
 ## What is this?
-As background processes of Unix shell, pybg can execute jobs in parallel with additional features.
+Pybg executes jobs in parallel as background processes, similar to Unix shell background processes, but with additional features.
 
 Key features:
 - Monitoring of job success and failure
 - Management of job output logs
-- Controling of the number of concurrently running jobs
+- Control of the number of concurrently running jobs
 - Automatic re-execution of failed jobs
-- Support for job submission via `Slurm Workload Manage`
+- Support for job submission via `Slurm Workload Manager`
 
 ## Install
 
@@ -52,15 +51,15 @@ wait
 
 ```sh
 #!/bin/sh
-# 1. Start command pool server or clear all commands
+# 1. Start the command pool server or clear all commands
 pybg start group_id
 # 2. Register jobs to the server
 pybg add group_id echo Hello World
 pybg add group_id sleep 40
 pybg add group_id python -c "print('This is python')"
-# 3. Dump commands in text and stop the server
+# 3. Dump commands to a text file and stop the server
 pybg write group_id
-# 4 Run commands
+# 4. Run commands
 pybg run group_id
 ```
 
@@ -69,100 +68,93 @@ pybg run group_id
 </tr>
 </table>
 
-
 Please confirm that the list of commands registered under `pybg/group_id/commands` is correctly recorded.
-
 
 ```sh
 cat pybg/group_id/commands
 ```
 
 `pybg start`, `pybg add`, and `pybg dump` are merely support commands for creating this text file.
-In reality, once this file exists, jobs can be executed using only `pybg run`.
+Once this file exists, jobs can be executed using only `pybg run`.
 
-This means that users can edit the text file manually, allowing for fine-grained modifications to jobs later.
+This means that users can manually edit the text file, allowing for fine-grained modifications to jobs.
 
 ## Template generation
 
-The basic usage of Pybg is somewhat formulaic or template-like. Pybg supports generating a shell script that describes these fundamental usage steps.
+The basic usage of Pybg follows a consistent template. To simplify this, Pybg can generate a shell script with the essential steps.
 
 ```sh
 pybg tpl > run.sh
 ```
 
-
 ## Run only nonsuccess/failed/unfinished/success jobs
 
-The most important feature of Pybg is its ability to manage job success and failure.
-If some of the jobs you submitted succeed while others fail, you will need to rerun only the failed jobs.
-
-With Pybg, you can easily retry failed jobs without any extra effort.
-
+One of Pybg's most important features is its ability to manage job success and failure.
+If some jobs succeed while others fail, you can rerun only the failed jobs.
 
 ```sh
 pybg run group_id [nonsuccess|fail|unfinish|success]
 ```
 
-`fail` indictes jobs which have exited with non-zero status, `unfinish` indicates jobs which have not yet started, `nonsuccess` indicates jobs corresponding to both `fail` and `unfinish`, and `success` indicates jobs which have exited  with zero status.
+- `fail` indicates jobs that exited with a non-zero status.
+- `unfinish` indicates jobs that have not yet started.
+- `nonsuccess` includes both `fail` and `unfinish` jobs.
+- `success` indicates jobs that exited with a zero status.
 
-You can omit characters after the first one.
-
+You can abbreviate these options by using only the first character.
 
 ```sh
 pybg run group_id n  # "n" is equivalent to "nonsuccess"
 ```
 
-You can also specify dirctly jobids to be executed.
+You can also specify job IDs to be executed directly.
 
 ```sh
 pybg run group_id jobid1 jobid2 ...
 ```
 
+## Automatic resubmission of failed jobs
 
-## Automatic submittion for failed jobs
-
-If a job ends with failed status, it can be automatically resubmitted. You can specify the number of times to resubmit the job, as shown below. By default, it is set to 0, meaning no resubmission will occur.
+If a job fails, it can be automatically resubmitted. You can specify the number of resubmission attempts as shown below.
+By default, this value is set to 0, meaning no resubmission.
 
 ```sh
 pybg run --retry 3 run group_id
 ```
 
-If -1 is specified, the job will be resubmitted indefinitely.
+To resubmit jobs indefinitely, use `-1`:
 
 ```sh
 pybg run --retry -1 run group_id
 ```
 
-
 ## Showing status
 
-- Showing the output of the job
-
+- View the output of a job
 
 ```sh
 pybg show <group-id> <jobid>
 ```
 
-- Showing the exit-status of the job if the job has been finished
-
+- View the exit status of a finished job
 
 ```sh
 pybg show <group-id> <jobid> status
 ```
 
-- Showing the command of the job
+- View the command associated with a job
 
 ```sh
 pybg show <group-id> <jobid> command
 ```
 
-- Showing the jobids of the jobs-group
+- View the job IDs in a job group
 
 ```sh
 pybg show <group-id>
 ```
 
-- Showing the jobids of notsuccess|fail|success|unfinish jobs
+- View job IDs for `notsuccess|fail|success|unfinish` jobs
 
 ```sh
 pybg show <group-id> <notsuccess|fail|success|unfinish>
@@ -170,7 +162,7 @@ pybg show <group-id> <notsuccess|fail|success|unfinish>
 
 ## To change basedir
 
-By default, Pybg uses `./pybg_logs` for the output directory. You can change the directory by `--basedir` option.
+By default, Pybg uses `./pybg_logs` as the output directory. You can change the directory using the `--basedir` option.
 
 ```sh
 pybg --basedir <basedir> dump group_id
@@ -178,19 +170,18 @@ pybg --basedir <basedir> run group_id
 pybg --basedir <basedir> show group_id
 ```
 
-You can also specify the directory by `PYBG_LOGS` environment variable.
-
+Alternatively, you can specify the directory using the `PYBG_LOGS` environment variable.
 
 ```sh
-export PYBG_LOGS=<basedir>>
+export PYBG_LOGS=<basedir>
 pybg dump group_id
 pybg run group_id
 pybg show group_id
 ```
 
-## Suppor for Slurm Workload Manager
+## Support for Slurm Workload Manager
 
-Pybg supports job submission via Slurm Workload Manager.
+Pybg supports job submission via the Slurm Workload Manager.
 
 <table>
 <tr>
@@ -228,43 +219,29 @@ pybg add sleep 10 "#SBATCH -p slurm_partition -c 3"
 </tr>
 </table>
 
+As shown in the leftmost example, you can use `srun` or `sbatch` directly.
+However, if Pybg exits abnormally, it may not be able to cancel these jobs.
+For job submission via Slurm, using `--sbatch-options` is recommended.
 
-As shown in the command on the left, you can use srun or sbatch directly. However, in this case, if Pybg exits abnormally, it may not be able to cancel these jobs.
-
-`--sbatch-options` is recommended for job submission via slurm.
-
-
-Also, pay attention to the command at the far right in the above table.
-When using `--sbatch-options <option>` followed by `pybg dump`, you should see that the command in the commands list includes `#SBATCH <option>`.
-In fact, adding `#SBATCH <option>` with `pybg add` will produce exactly the same behavior.
+When using `--sbatch-options <option>` followed by `pybg dump`, the resulting commands list will include `#SBATCH <option>`.
+In fact, adding `#SBATCH <option>` with `pybg add` achieves the same behavior.
 
 > [!TIP]
-> When Pybg is terminated, Pybg tries to cancel Slurm jobs
+> When Pybg is terminated, it tries to cancel Slurm jobs.
 
-## Tips: To use controling operator of Unix shell
-If you'd like to use some controling operator, such `;`, `&&`, `||`, etc. in a command, please use shell command with `-c`.
+## Tips: Using shell control operators
 
-<table>
-<tr>
-<th>Bad</th>
-<th>Good</th>
-</tr>
-<tr>
-<td>
-<sub>
+If you want to use shell control operators like `;`, `&&`, `||`, etc., you should wrap the command using `sh -c`.
+
+Incorrect:
 
 ```sh
 pybg add echo AAA; exit 0
 ```
 
-</sub>
-<td>
-<sub>
+Correct:
 
 ```sh
 pybg add sh -c "echo AAA; exit 0"
 ```
-</sub>
-</td>
-</tr>
-</table>
+```
