@@ -12,7 +12,7 @@ jobs:
   slurm-pytest:
     runs-on: ubuntu-latest
     container:
-      image: lmacken/slurm-docker-cluster
+      image: slurm-docker-cluster
       options: --privileged
     strategy:
       matrix:
