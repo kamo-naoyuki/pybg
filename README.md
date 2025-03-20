@@ -136,32 +136,32 @@ pybg run --retry -1 run group_id
 
 
 ```sh
-pybg show <group-id> <jobid>
+pybg show [group-id] [jobid]
 ```
 
 - Showing the exit-status of the job if the job has been finished
 
 
 ```sh
-pybg show <group-id> <jobid> status
+pybg show [group-id] [jobid] status
 ```
 
 - Showing the command of the job
 
 ```sh
-pybg show <group-id> <jobid> command
+pybg show [group-id] [jobid] command
 ```
 
 - Showing the jobids of the jobs-group
 
 ```sh
-pybg show <group-id>
+pybg show [group-id]
 ```
 
-- Showing the jobids of notsuccess/fail/success/unfinish jobs
+- Showing the jobids of notsuccess|fail|success|unfinish jobs
 
 ```sh
-pybg show <group-id> <notsuccess|fail/success/unfinish>
+pybg show [group-id] [notsuccess|fail|success|unfinish]
 ```
 
 ## To change basedir

@@ -21,6 +21,7 @@ version = {attr = "pybg.__version__"}
 [project.optional-dependencies]
 dev = [
     "pytest>=6.2",
+    "pytest-cov",
 ]
 
 [tool.setuptools.package-dir]
