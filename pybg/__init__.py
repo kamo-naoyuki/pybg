@@ -875,7 +875,6 @@ trap write_status EXIT
         log_interval=30,
         retry: int = 0,
     ):
-
         if basedir is None:
             basedir = os.environ.get("PYBG_BASEDIR", "pybg_logs")
         basedir = Path(basedir)
