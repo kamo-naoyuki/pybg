@@ -18,7 +18,7 @@ from collections import Counter
 from functools import partial, wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Set, Union
 
 __version__ = "0.1.0"
 
@@ -71,7 +71,7 @@ def read_file_reverse(filename: Union[str, Path], max_lines: int):
     with open(filename, "rb") as f:
         f.seek(0, 2)
         position = f.tell()
-        buffer = []
+        buffer: list[bytes] = []
         line_count = 0
 
         while position > 0 and line_count < max_lines:
@@ -80,7 +80,7 @@ def read_file_reverse(filename: Union[str, Path], max_lines: int):
             char = f.read(1)
 
             if char == b"\n":
-                if buffer:
+                if len(buffer) > 0:
                     lines.append(b"".join(reversed(buffer)).decode())
                     buffer = []
                     line_count += 1
@@ -89,7 +89,7 @@ def read_file_reverse(filename: Union[str, Path], max_lines: int):
             else:
                 buffer.append(char)
 
-        if buffer and line_count < max_lines:
+        if len(buffer) > 0 and line_count < max_lines:
             lines.append(b"".join(reversed(buffer)).decode("utf-8"))
     for line in lines[::-1]:
         print(line)
@@ -186,7 +186,7 @@ class CommandPoolServer:
                     logger.warning(f"Timeout: {self.timeout}s")
                     os._exit(0)
 
-    def safe_recv(self, socket: socket.socket, chunk: int = 1024) -> bytes:
+    def safe_recv(self, socket: socket.socket, chunk: int = 1024) -> Optional[bytes]:
         received = b""
         while True:
             try:
@@ -201,12 +201,12 @@ class CommandPoolServer:
                 # Connection reset by client should be ignored
                 logger.error(f"{e}")
                 data = None
-                received = None
+                return None
             except MemoryError:
                 logger.error("Memory error has happened! Stopping server...")
                 self.running = False
                 data = None
-                received = None
+                return None
             if not data:
                 break
         return received
@@ -218,9 +218,9 @@ class CommandPoolServer:
                 self.last_access_time = time.time()
             return True
         except ConnectionResetError as e:
-            logger.error(f"Error sending {data}: {e}")
+            logger.error(f"Error sending: {e}")
         except BrokenPipeError as e:
-            logger.error(f"Error sending {data}: {e}")
+            logger.error(f"Error sending: {e}")
         return False
 
     def start(self) -> None:
@@ -321,7 +321,9 @@ def server_start(group_id: str, server_idle_timeout: float = 60 * 5, check_serve
     check_server_running(group_id, timeout=check_server_timeout)
 
 
-def dump(group_id: str, basedir: str = None, check_server_timeout: float = 1, allow_same: bool = False):
+def dump(
+    group_id: str, basedir: Optional[Union[str, Path]] = None, check_server_timeout: float = 1, allow_same: bool = False
+):
     check_server_running(group_id, timeout=check_server_timeout)
 
     if basedir is None:
@@ -380,7 +382,7 @@ def dump(group_id: str, basedir: str = None, check_server_timeout: float = 1, al
 
             if PROTO.END in received:
                 if received != PROTO.END:
-                    raise RuntimeError(f"Bug?: {received}")
+                    raise RuntimeError(f"Bug?: {received!r}")
                 # Break while loop
                 print_colored(
                     log_format(
@@ -425,7 +427,7 @@ def yield_command_list(groupdir: Path, slurm_check: bool = False):
     else:
         raise RuntimeError(f"{str(groupdir / 'commands')} is not existing")
 
-    counter = Counter()
+    counter: Counter = Counter()
     for command in command_list:
         if "#SBATCH" in command:
             if slurm_check:
@@ -626,14 +628,15 @@ class Runner:
         group_id: str,
         command: str,
         valid_command: str,
-        jobdir: str,
+        jobdir: Union[str, Path],
         sbatch_options: str,
         processes,
         success_fail_counter: list[int],
         submit_counter: int,
     ):
-        logfile = Path(jobdir) / "output"
-        jobid = Path(jobdir).name
+        jobdir = Path(jobdir)
+        logfile = jobdir / "output"
+        jobid = jobdir.name
 
         if sbatch_options is None:
             flogfile = logfile.open("w")
@@ -865,7 +868,7 @@ trap write_status EXIT
         self,
         group_id,
         jobids=list[str],
-        basedir: Optional[str] = None,
+        basedir: Optional[Union[str, Path]] = None,
         num_parallel=10,
         launch_interval=0.1,
         waittime=0.02,
@@ -939,8 +942,8 @@ trap write_status EXIT
         self.count_lock = threading.Lock()
         success_fail_counter = [0, 0]
         event = threading.Event()
-        processes = {}
-        failed_jobs = set()
+        processes: Dict[str, Any] = {}
+        failed_jobs: Set[str] = set()
 
         thread = threading.Thread(
             target=self.write_status,
@@ -1003,7 +1006,7 @@ def start_and_start(group_id: str, server_idle_timeout: float = 60.0 * 5, check_
         if data != PROTO.ACK + PROTO.END:
             print_colored(
                 log_format(
-                    message=f"Received unexpected data: {data}",
+                    message=f"Received unexpected data: {data!r}",
                     group_id=group_id,
                     status="Error",
                 ),
@@ -1029,7 +1032,7 @@ def add(group_id: str, command: str, check_server_timeout: float = 2.0):
         if data != PROTO.ACK + PROTO.END:
             print_colored(
                 log_format(
-                    message=f"Received unexpected data: {data}",
+                    message=f"Received unexpected data: {data!r}",
                     group_id=group_id,
                     status="Error",
                 ),
@@ -1206,9 +1209,11 @@ def str2bool(arg) -> bool:
         return True
     elif arg.lower() in ["false", "0"]:
         return False
+    else:
+        raise TypeError(f"Must be true or false, but got {arg}")
 
 
-def main(args: Optional[list[str]] = None):
+def main(sysargs: Optional[list[str]] = None):
     for order_type in ["nonsuccess", "unfinish", "fail", "success"]:
         if len(order_type) == JOBID_LEN:
             raise RuntimeError(f"Please set different number: JOBID_LEN={JOBID_LEN}")
@@ -1302,7 +1307,7 @@ def main(args: Optional[list[str]] = None):
         )
     )
 
-    args = parser.parse_args(args)
+    args = parser.parse_args(sysargs)
     if hasattr(args, "handler"):
         args.handler(args)
     else:
