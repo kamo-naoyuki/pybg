@@ -1,4 +1,5 @@
 # Pybg: Local job management tool
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Lint](https://github.com/kamo-naoyuki/pybg/actions/workflows/lint.yml/badge.svg)](https://github.com/kamo-naoyuki/pybg/actions/workflows/lint.yml)
 [![Pytest](https://github.com/kamo-naoyuki/pybg/actions/workflows/pytest.yml/badge.svg)](https://github.com/kamo-naoyuki/pybg/actions/workflows/pytest.yml)
 [![codecov](https://codecov.io/gh/kamo-naoyuki/pybg/graph/badge.svg?token=820U4qvFg1)](https://codecov.io/gh/kamo-naoyuki/pybg)
