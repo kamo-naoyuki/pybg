@@ -13,13 +13,20 @@ permissions: write-all
 jobs:
   slurm-pytest:
     runs-on: ubuntu-22.04
-    container:
-      image: scalableminds/slurm-docker-cluster:master
     strategy:
       matrix:
         python-version: [3.7, 3.8, 3.9, "3.10", 3.11, 3.12, 3.13]
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - "8888:3306"
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
     steps:
     - uses: actions/checkout@v4
+    - uses: koesterlab/setup-slurm-action@v1
     # - name: Set up Docker Compose
     #   run: |
     #     docker compose version
@@ -35,17 +42,10 @@ jobs:
     #     until docker exec slurm-container sinfo; do
     #       sleep 5
     #     done
-    - name: Start slurm services
-      run: |
-        /usr/local/bin/docker-entrypoint.sh slurmdbd
-        /usr/local/bin/docker-entrypoint.sh slurmctld
-        /usr/local/bin/docker-entrypoint.sh slurmd
     - name: Wait for Slurm to initialize
       run: |
         echo "Waiting for Slurm to be ready..."
-        until sinfo; do
-          sleep 5
-        done
+        sinfo
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v4
       with:
