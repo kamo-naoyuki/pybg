@@ -37,9 +37,9 @@ jobs:
     #     done
     - name: Start slurm services
       run: |
+        /usr/local/bin/docker-entrypoint.sh slurmdbd
         /usr/local/bin/docker-entrypoint.sh slurmctld
         /usr/local/bin/docker-entrypoint.sh slurmd
-        /usr/local/bin/docker-entrypoint.sh slurmdbd
     - name: Wait for Slurm to initialize
       run: |
         echo "Waiting for Slurm to be ready..."
